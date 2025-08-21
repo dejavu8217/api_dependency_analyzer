@@ -1,0 +1,3072 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API 의존성 시각화 & 리스크 분석기</title>
+    <script src="https://d3js.org/d3.v7.min.js">async function handleOpenAPIUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                console.log('No file selected');
+                return;
+            }
+
+            console.log('Loading OpenAPI file:', file.name);
+            updateStatus('⏳ OpenAPI 파일 로딩 중...');
+
+            try {
+                const text = await file.text();
+                console.log('File content loaded, parsing JSON...');
+                const data = JSON.parse(text);
+                
+                // OpenAPI 또는 Swagger 스펙 확인
+                if (!data.paths && !data.swagger && !data.openapi) {
+                    throw new Error('유효한 OpenAPI/Swagger 파일이 아닙니다');
+                }
+                
+                parseOpenAPI(data);
+                // 파싱 이후 후처리
+                updateGroupsList();
+                if (typeof updateLegend === 'function') updateLegend();
+                if (typeof computeAllRiskScores === 'function') computeAllRiskScores();
+                renderGraph();
+                updateStatus(`✅ OpenAPI 로드 완료: ${nodes.length}개 API, ${links.length}개 의존성`);
+            } catch (error) {
+                console.error('OpenAPI parsing error:', error);
+                updateStatus('❌ OpenAPI 파싱 실패: ' + error.message);
+                alert('OpenAPI 파일 처리 중 오류가 발생했습니다:
+' + error.message);
+            }
+        }
+async function handleMetricsUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                console.log('No file selected');
+                return;
+            }
+
+            console.log('Loading metrics file:', file.name);
+            updateStatus('⏳ 메트릭 파일 로딩 중...');
+
+            try {
+                const text = await file.text();
+                console.log('File content loaded, parsing JSON...');
+                const data = JSON.parse(text);
+                
+                // 메트릭 데이터 검증
+                if (!Array.isArray(data) && typeof data !== 'object') {
+                    throw new Error('유효한 메트릭 파일이 아닙니다');
+                }
+                
+                parseMetrics(data);
+                if (typeof computeAllRiskScores === 'function') computeAllRiskScores();
+                renderGraph();
+                updateStatus(`✅ 메트릭 로드 완료: ${metrics.size}개 API 적용`);
+            } catch (error) {
+                console.error('Metrics parsing error:', error);
+                updateStatus('❌ 메트릭 파싱 실패: ' + error.message);
+                alert('메트릭 파일 처리 중 오류가 발생했습니다:
+' + error.message);
+            }
+        }
+function highlightGroupConnections(groupName) {
+            // 링크들을 그룹 기준 규칙으로 스타일링
+            g.selectAll('.link')
+                .style('stroke', function(d) {
+                    const s = (d.source.id || d.source || d.sourceNode);
+                    const t = (d.target.id || d.target || d.targetNode);
+                    const sourceNode = nodes.find(n => n.id === s);
+                    const targetNode = nodes.find(n => n.id === t);
+                    if (sourceNode && sourceNode.group === groupName) {
+                        return '#0c8ce9'; // Outgoing - blue
+                    } else if (targetNode && targetNode.group === groupName) {
+                        return '#EA4D08'; // Incoming - orange
+                    }
+                    return d.color || '#666';
+                })
+                .style('stroke-dasharray', function(d) {
+                    const s = (d.source.id || d.source || d.sourceNode);
+                    const t = (d.target.id || d.target || d.targetNode);
+                    const sourceNode = nodes.find(n => n.id === s);
+                    const targetNode = nodes.find(n => n.id === t);
+                    if (sourceNode && sourceNode.group === groupName) {
+                        return '5,5';      // Outgoing dashed
+                    } else if (targetNode && targetNode.group === groupName) {
+                        return 'none';     // Incoming solid
+                    }
+                    return 'none';
+                })
+                .style('stroke-width', function(d) {
+                    const s = (d.source.id || d.source || d.sourceNode);
+                    const t = (d.target.id || d.target || d.targetNode);
+                    const sourceNode = nodes.find(n => n.id === s);
+                    const targetNode = nodes.find(n => n.id === t);
+                    const w = Math.max(0.6, Math.sqrt(d.weight || 1) * 0.6);
+                    if ((sourceNode && sourceNode.group === groupName) || (targetNode && targetNode.group === groupName)) {
+                        return Math.max(1.2, Math.sqrt(d.weight || 1) * 0.9);
+                    }
+                    return w;
+                })
+                .attr('marker-end', function(d) {
+                    const s = (d.source.id || d.source || d.sourceNode);
+                    const t = (d.target.id || d.target || d.targetNode);
+                    const sourceNode = nodes.find(n => n.id === s);
+                    const targetNode = nodes.find(n => n.id === t);
+                    if (sourceNode && sourceNode.group === groupName) {
+                        return 'url(#arrow-outgoing)';
+                    } else if (targetNode && targetNode.group === groupName) {
+                        return 'url(#arrow-incoming)';
+                    }
+                    return `url(#arrow-${d.type || 'normal'})`;
+                })
+                .style('stroke-opacity', function(d) {
+                    const s = (d.source.id || d.source || d.sourceNode);
+                    const t = (d.target.id || d.target || d.targetNode);
+                    const sourceNode = nodes.find(n => n.id === s);
+                    const targetNode = nodes.find(n => n.id === t);
+                    return ((sourceNode && sourceNode.group === groupName) || (targetNode && targetNode.group === groupName)) ? 1 : 0.15;
+                });
+
+            // 그룹 원 강조
+            g.selectAll('.group-node')
+                .attr('stroke', d => (d.name === groupName ? '#64ffda' : d.color))
+                .attr('stroke-width', d => (d.name === groupName ? 3 : 1));
+        }
+
+function clearGroupHighlights() {
+            g.selectAll('.link')
+                .style('stroke', d => d.color || '#666')
+                .style('stroke-dasharray', 'none')
+                .style('stroke-width', d => Math.max(0.6, Math.sqrt(d.weight || 1) * 0.6))
+                .attr('marker-end', d => `url(#arrow-${d.type || 'normal'})`)
+                .style('stroke-opacity', 0.6);
+
+            g.selectAll('.group-node')
+                .attr('stroke', d => d.color)
+                .attr('stroke-width', 1);
+        }
+function computeRawRisk(node) {
+            const inDeps = links.filter(l => (l.target.id || l.target) === node.id).length;
+            const outDeps = links.filter(l => (l.source.id || l.source) === node.id).length;
+            let score = inDeps * 3 + outDeps * 1.5;
+            if (node.method === 'DELETE') score *= 1.25;
+            if (node.method === 'PUT' || node.method === 'PATCH') score *= 1.15;
+            const m = metrics.get(node.id);
+            if (m) {
+                const err = (m.errorsPercent || 0);
+                const p95 = (m.p95 || 0);
+                const calls = (m.calls || 0);
+                score += err * 8;
+                score += Math.log10(Math.max(1, p95)) * 2;
+                score += Math.log10(Math.max(1, calls)) * 1.5;
+            }
+            score += Math.sqrt(inDeps) * 3 + Math.sqrt(outDeps) * 1.5;
+            return score;
+        }
+
+function buildRiskExplanation(node) {
+            const inDeps = links.filter(l => (l.target.id || l.target) === node.id).length;
+            const outDeps = links.filter(l => (l.source.id || l.source) === node.id).length;
+            const m = metrics.get(node.id) || {};
+            const parts = [];
+            parts.push(`들어오는 의존성 ${inDeps}개`);
+            parts.push(`나가는 의존성 ${outDeps}개`);
+            if (typeof m.errorsPercent === 'number') parts.push(`에러율 ${(m.errorsPercent*100).toFixed(1)}%`);
+            if (typeof m.p95 === 'number') parts.push(`P95 ${m.p95}ms`);
+            if (typeof m.calls === 'number') parts.push(`호출량 ${m.calls.toLocaleString()}회`);
+            return `평가 근거: ${parts.join(', ')}.`;
+        }
+
+function computeAllRiskScores() {
+            const raws = nodes.map(n => {
+                const r = computeRawRisk(n);
+                n._riskRaw = r;
+                return r;
+            });
+            if (raws.length === 0) return;
+            const sorted = [...raws].sort((a,b)=>a-b);
+            const pct = q => {
+                if (sorted.length === 1) return sorted[0];
+                const idx = (sorted.length-1) * q;
+                const lo = Math.floor(idx), hi = Math.ceil(idx);
+                if (lo === hi) return sorted[lo];
+                const t = idx - lo;
+                return sorted[lo]*(1-t) + sorted[hi]*t;
+            };
+            const p10 = pct(0.10);
+            const p90 = pct(0.90);
+            const denom = Math.max(1e-6, p90 - p10);
+            nodes.forEach(n => {
+                const norm = (n._riskRaw - p10) / denom;
+                const score = Math.max(0, Math.min(10, norm * 10));
+                n.riskScore = score;
+                n.riskExplanation = buildRiskExplanation(n);
+            });
+        }
+
+function calculateRiskScore(node) {
+            if (typeof node.riskScore === 'number') {
+                const level = node.riskScore < 3 ? '낮음' : node.riskScore < 7 ? '중간' : '높음';
+                const details = [
+                    `<strong>위험도: ${level}</strong>`,
+                    node.riskExplanation || buildRiskExplanation(node)
+                ];
+                return { score: node.riskScore, details };
+            }
+            const raw = computeRawRisk(node);
+            const approx = Math.max(0, Math.min(10, raw / 5));
+            const level = approx < 3 ? '낮음' : approx < 7 ? '중간' : '높음';
+            return { score: approx, details: [`<strong>위험도: ${level}</strong>`, buildRiskExplanation(node)] };
+        }
+</script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+
+        /* Layout */
+        #app {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        #left-panel {
+            width: 300px;
+            background: #141414;
+            border-right: 1px solid #2a2a4a;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        #main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        #right-panel {
+            width: 340px;
+            background: #141414;
+            border-left: 1px solid #2a2a4a;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        /* Header */
+        #header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            padding: 16px 24px;
+            border-bottom: 1px solid #2a2a4a;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.5);
+        }
+
+        #header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #ffffff;
+            flex: 1;
+        }
+
+        /* File Upload */
+        .upload-section {
+            padding: 20px;
+            border-bottom: 1px solid #2a2a4a;
+        }
+
+        .upload-btn {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            background: #EA4D08;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            transition: all 0.3s;
+        }
+
+        .upload-btn:hover {
+            background: #d44207;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(234, 77, 8, 0.3);
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        /* View Switcher */
+        .view-switcher {
+            display: flex;
+            gap: 8px;
+            padding: 12px 24px;
+            background: #16213e;
+            border-bottom: 1px solid #2a2a4a;
+        }
+
+        .view-btn {
+            padding: 8px 16px;
+            background: #2a2a4a;
+            color: #8892b0;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .view-btn.active {
+            background: #EA4D08;
+            color: white;
+        }
+
+        .view-btn.active:hover { background: #d44207; color: white; }
+
+        .view-btn:hover:not(.active) {
+            background: #3a3a5a;
+            color: #64ffda;
+        }
+
+        /* Search */
+        .search-section {
+            padding: 16px;
+            border-bottom: 1px solid #2a2a4a;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            color: white;
+            font-size: 14px;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+
+        /* Stats */
+        .stats-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            padding: 16px;
+            border-bottom: 1px solid #2a2a4a;
+        }
+
+        .stat-card {
+            background: #1a1a1a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #64ffda;
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: #8892b0;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        /* Groups List */
+        .groups-section {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .section-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #8892b0;
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .group-item {
+            padding: 10px;
+            margin-bottom: 4px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .group-item:hover {
+            border-color: #667eea;
+            transform: translateX(3px);
+        }
+
+        .group-item.active {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
+            border-color: #64ffda;
+        }
+
+        .group-name {
+            font-size: 14px;
+            color: #e0e0e0;
+            font-weight: 500;
+        }
+
+        .group-count {
+            font-size: 12px;
+            color: #8892b0;
+            background: #2a2a4a;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+
+        .group-item.active .group-count {
+            background: rgba(100, 255, 218, 0.2);
+            color: #64ffda;
+        }
+
+        /* Canvas */
+        #canvas {
+            flex: 1;
+            background: radial-gradient(circle at center, #1a1a1a 0%, #0a0a0a 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        #graph-svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Zoom Controls */
+        .zoom-controls {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            z-index: 100;
+        }
+
+        .zoom-btn {
+            width: 32px;
+            height: 32px;
+            background: rgba(26, 26, 46, 0.9);
+            border: 1px solid #2a2a4a;
+            border-radius: 4px;
+            color: #8892b0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+
+        .zoom-btn:hover {
+            background: #2a2a4a;
+            color: #64ffda;
+            border-color: #64ffda;
+        }
+
+        /* Right Panel */
+        .metric-card {
+            background: #1a1a1a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .metric-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #8892b0;
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #64ffda;
+            margin-bottom: 8px;
+        }
+
+        .metric-label {
+            font-size: 14px;
+            color: #8892b0;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+
+        .metric-detail {
+            font-size: 14px;
+            color: #e0e0e0;
+            line-height: 1.6;
+            margin-top: 8px;
+        }
+
+        .risk-gauge {
+            height: 8px;
+            background: #2a2a4a;
+            border-radius: 4px;
+            margin: 12px 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .risk-gauge-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #FFC107, #f07178);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .dependency-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .dependency-item {
+            padding: 8px;
+            background: #1a1a1a;
+            border-left: 3px solid #667eea;
+            border-radius: 0 4px 4px 0;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: #e0e0e0;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .dependency-item:hover {
+            background: rgba(102, 126, 234, 0.1);
+            transform: translateX(2px);
+        }
+
+        .dependency-item.incoming {
+            border-left-color: #64ffda;
+        }
+
+        .dependency-item.outgoing {
+            border-left-color: #f07178;
+        }
+
+        .dependency-item.circular {
+            border-left-color: #c792ea;
+        }
+
+        .dependency-type {
+            font-size: 11px;
+            color: #8892b0;
+            text-transform: uppercase;
+            margin-top: 4px;
+        }
+
+        /* Matrix View */
+        #matrix-container {
+            display: none;
+            padding: 20px;
+            overflow: auto;
+            height: 100%;
+        }
+
+        .matrix-cell {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .matrix-cell:hover {
+            filter: brightness(1.3);
+        }
+
+        .matrix-label {
+            font-size: 11px;
+            fill: #e0e0e0;
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: absolute;
+            padding: 10px;
+            background: rgba(26, 26, 46, 0.98);
+            border: 1px solid #667eea;
+            border-radius: 6px;
+            color: white;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 300px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        .tooltip.show {
+            opacity: 1;
+        }
+
+        .tooltip h4 {
+            color: #64ffda;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .tooltip-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 3px 0;
+        }
+
+        .tooltip-label {
+            color: #8892b0;
+        }
+
+        .tooltip-value {
+            color: #e0e0e0;
+            font-weight: 500;
+        }
+
+        /* Cycles Panel */
+        .cycles-section {
+            margin-top: 20px;
+            padding: 16px;
+        }
+
+        .cycle-item {
+            padding: 10px;
+            background: #1a1a1a;
+            border-left: 3px solid #c792ea;
+            border-radius: 0 6px 6px 0;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .cycle-item:hover {
+            background: rgba(199, 146, 234, 0.1);
+            transform: translateX(4px);
+        }
+
+        .cycle-nodes {
+            font-size: 12px;
+            color: #8892b0;
+            margin-top: 4px;
+        }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 12px;
+            z-index: 100;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        /* Loading */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #2a2a4a;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Node styles for graph */
+        .node {
+            cursor: pointer;
+        }
+
+        .node-label {
+            font-size: 11px;
+            pointer-events: none;
+            fill: #e0e0e0;
+            text-anchor: middle;
+        }
+
+        .link {
+            fill: none;
+            stroke-opacity: 0.4;
+            transition: all 0.3s;
+        }
+
+        .link.highlighted {
+            stroke-opacity: 1;
+            stroke-width: 3;
+            stroke: #64ffda;
+        }
+
+        .node.highlighted circle {
+            stroke: #64ffda;
+            stroke-width: 3;
+            filter: brightness(1.3);
+        }
+
+        .node.dimmed {
+            opacity: 0.2;
+        }
+
+        .link.dimmed {
+            opacity: 0.1;
+        }
+
+        .group-node {
+            fill-opacity: 0.15;
+            stroke-width: 2;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .group-node:hover {
+            fill-opacity: 0.25;
+            stroke-width: 3;
+        }
+
+        .group-node.focused {
+            fill-opacity: 0.3;
+            stroke-width: 3;
+        }
+
+        .group-label {
+            font-size: 14px;
+            font-weight: 600;
+            fill: #ffffff;
+            text-anchor: middle;
+            pointer-events: none;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            color: #8892b0;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        .empty-state-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0f0f23;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #2a2a4a;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3a3a5a;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Left Panel -->
+        <div id="left-panel">
+            <div class="upload-section">
+                <label for="openapi-upload">
+                    <div class="upload-btn">📁 OpenAPI 업로드</div>
+                </label>
+                <input type="file" id="openapi-upload" accept=".json">
+                
+                <label for="metrics-upload">
+                    <div class="upload-btn">📊 메트릭 업로드</div>
+                </label>
+                <input type="file" id="metrics-upload" accept=".json">
+                
+                <button class="upload-btn" onclick="loadSampleData()" style="background: linear-gradient(135deg, #f07178 0%, #c792ea 100%);">
+                    🎯 샘플 데이터 로드
+                </button>
+            </div>
+
+            <div class="search-section">
+                <input type="text" class="search-input" placeholder="API 검색..." id="search-input">
+            </div>
+
+            <div class="stats-container">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-groups">0</div>
+                    <div class="stat-label">그룹</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-apis">0</div>
+                    <div class="stat-label">API</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-deps">0</div>
+                    <div class="stat-label">의존성</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-cycles">0</div>
+                    <div class="stat-label">순환</div>
+                </div>
+            </div>
+
+            <div class="groups-section">
+                <div class="section-title">API 그룹</div>
+                <div id="groups-list"></div>
+            </div>
+
+            <div class="cycles-section" id="cycles-section" style="display: none;">
+                <div class="section-title">순환 의존성</div>
+                <div id="cycles-list"></div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div id="main-content">
+            <div id="header">
+                <h1>🔍 API 의존성 분석기</h1>
+                <span id="status" style="color: #8892b0; font-size: 14px;">파일을 업로드하거나 샘플 데이터를 로드하세요</span>
+            </div>
+
+            <div class="view-switcher">
+                <button class="view-btn active" data-view="group">그룹뷰</button>
+                <button class="view-btn" data-view="detail">상세뷰</button>
+                <button class="view-btn" data-view="matrix">매트릭스</button>
+            </div>
+
+            <div id="canvas">
+                <svg id="graph-svg"></svg>
+                <div id="matrix-container"></div>
+                
+                <div class="zoom-controls">
+                    <button class="zoom-btn" onclick="zoomIn()">+</button>
+                    <button class="zoom-btn" onclick="zoomOut()">−</button>
+                    <button class="zoom-btn" onclick="resetZoom()">⟲</button>
+                    <button class="zoom-btn" onclick="fitToScreen()">⊡</button>
+                </div>
+                
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #c792ea;"></div>
+                        <span>인증·보안</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #64ffda;"></div>
+                        <span>사용자·멤버</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffcb6b;"></div>
+                        <span>상품·제품</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #f07178;"></div>
+                        <span>주문·장바구니</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #82aaff;"></div>
+                        <span>결제</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div id="right-panel">
+            <div id="node-info" style="display: none;">
+                <div class="metric-card">
+                    <div class="metric-title">선택된 항목</div>
+                    <h3 id="selected-name" style="color: #64ffda; margin-bottom: 8px;">-</h3>
+                    <div id="selected-details" class="metric-detail"></div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-title">위험도 평가</div>
+                    <div class="metric-value" id="risk-score">-</div>
+                    <div class="risk-gauge">
+                        <div class="risk-gauge-fill" id="risk-gauge"></div>
+                    </div>
+                    <div class="metric-detail" id="risk-detail"></div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-title">의존성 분석</div>
+                    <div class="metric-label">들어오는 의존성 (IN)</div>
+                    <div class="dependency-list" id="in-dependencies"></div>
+                    <div class="metric-label" style="margin-top: 12px;">나가는 의존성 (OUT)</div>
+                    <div class="dependency-list" id="out-dependencies"></div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-title">영향도</div>
+                    <div class="metric-detail" id="impact-detail"></div>
+                </div>
+            </div>
+
+            <div id="default-info">
+                <div class="metric-card">
+                    <div class="metric-title">시작하기</div>
+                    <div class="metric-detail">
+                        1. OpenAPI JSON 파일을 업로드하거나<br>
+                        2. 샘플 데이터를 로드하세요<br>
+                        3. 노드를 클릭하여 상세 정보를 확인하세요<br><br>
+                        <strong>단축키:</strong><br>
+                        • ESC: 포커스 해제<br>
+                        • 빈 공간 클릭: 선택 해제
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        // Global state
+        let nodes = [];
+        let links = [];
+        let groups = new Map();
+        let metrics = new Map();
+        let currentView = 'group';
+        let simulation = null;
+        let svg = null;
+        let g = null;
+        let focusedNode = null;
+        let focusedGroup = null;
+        let cycles = [];
+        let zoom = null;
+
+        // Group colors
+        const groupColors = {
+            'auth': '#c792ea',
+            'authentication': '#c792ea',
+            '인증·보안': '#c792ea',
+            'user': '#64ffda',
+            'users': '#64ffda',
+            '사용자·멤버': '#64ffda',
+            'product': '#ffcb6b',
+            'products': '#ffcb6b',
+            '상품·제품': '#ffcb6b',
+            'order': '#f07178',
+            'orders': '#f07178',
+            '주문·장바구니': '#f07178',
+            'payment': '#82aaff',
+            'payments': '#82aaff',
+            '구독·결제': '#82aaff',
+            'admin': '#ff5370',
+            '설정·관리자': '#ff5370',
+            'report': '#c3e88d',
+            'reports': '#c3e88d',
+            '리포트·대시보드': '#c3e88d',
+            'email': '#ffc777',
+            '이메일·캠페인': '#ffc777',
+            'integration': '#89ddff',
+            '통합·연동': '#89ddff',
+            'team': '#b2ccd6',
+            '팀·조직': '#b2ccd6'
+        };
+
+        // Group mapping rules
+        const groupMappings = {
+            'auth': '인증·보안',
+            'authentication': '인증·보안',
+            'login': '인증·보안',
+            'logout': '인증·보안',
+            'user': '사용자·멤버',
+            'users': '사용자·멤버',
+            'member': '사용자·멤버',
+            'profile': '사용자·멤버',
+            'product': '상품·제품',
+            'products': '상품·제품',
+            'item': '상품·제품',
+            'catalog': '상품·제품',
+            'order': '주문·장바구니',
+            'orders': '주문·장바구니',
+            'cart': '주문·장바구니',
+            'checkout': '주문·장바구니',
+            'payment': '구독·결제',
+            'payments': '구독·결제',
+            'billing': '구독·결제',
+            'subscription': '구독·결제',
+            'admin': '설정·관리자',
+            'settings': '설정·관리자',
+            'config': '설정·관리자',
+            'report': '리포트·대시보드',
+            'reports': '리포트·대시보드',
+            'dashboard': '리포트·대시보드',
+            'analytics': '리포트·대시보드',
+            'email': '이메일·캠페인',
+            'campaign': '이메일·캠페인',
+            'notification': '이메일·캠페인',
+            'integration': '통합·연동',
+            'webhook': '통합·연동',
+            'api': '통합·연동',
+            'team': '팀·조직',
+            'organization': '팀·조직',
+            'workspace': '팀·조직'
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', init);
+
+        function init() {
+            setupEventListeners();
+            initializeGraph();
+        }
+
+        function setupEventListeners() {
+            // File uploads - 직접 이벤트 핸들러 연결
+            const openapiInput = document.getElementById('openapi-upload');
+            const metricsInput = document.getElementById('metrics-upload');
+            
+            if (openapiInput) {
+                openapiInput.addEventListener('change', function(e) {
+                    handleOpenAPIUpload(e);
+                });
+            }
+            
+            if (metricsInput) {
+                metricsInput.addEventListener('change', function(e) {
+                    handleMetricsUpload(e);
+                });
+            }
+
+            // View switcher
+            document.querySelectorAll('.view-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const view = e.target.dataset.view;
+                    switchView(view);
+                });
+            });
+
+            // Search
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                searchInput.addEventListener('input', handleSearch);
+            }
+
+            // ESC key to clear focus
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    clearFocus();
+                }
+            });
+        }
+
+        function initializeGraph() {
+            const canvas = document.getElementById('canvas');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+
+            svg = d3.select('#graph-svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            // Create defs for arrows and gradients
+            const defs = svg.append('defs');
+            
+            // Create arrow markers for different types
+            const arrowTypes = [
+                { id: 'arrow-normal', color: '#8892b0' },
+                { id: 'arrow-highlighted', color: '#64ffda' },
+                { id: 'arrow-crud', color: '#64ffda' },
+                { id: 'arrow-auth-required', color: '#c792ea' },
+                { id: 'arrow-workflow', color: '#f07178' },
+                { id: 'arrow-reference', color: '#f78c6c' },
+                { id: 'arrow-read-modify', color: '#82aaff' },
+                { id: 'arrow-list-detail', color: '#ffcb6b' },
+                { id: 'arrow-parent-child', color: '#c3e88d' },
+                { id: 'arrow-user-action', color: '#89ddff' },
+                { id: 'arrow-admin-control', color: '#ff5370' },
+                { id: 'arrow-data-source', color: '#b2ccd6' },
+                { id: 'arrow-incoming', color: '#EA4D08' },  // 들어오는 연결 - 주황색
+                { id: 'arrow-outgoing', color: '#0c8ce9' }   // 나가는 연결 - 파란색
+            ];
+            
+            arrowTypes.forEach(arrow => {
+                defs.append('marker')
+                    .attr('id', arrow.id)
+                    .attr('viewBox', '0 -5 10 10')
+                    .attr('refX', 25)
+                    .attr('refY', 0)
+                    .attr('markerWidth', 6)  // 조금 더 크게 (3 -> 5)
+                    .attr('markerHeight', 6)  // 조금 더 크게 (3 -> 5)
+                    .attr('orient', 'auto')
+                    .attr('markerUnits', 'strokeWidth')
+                    .append('path')
+                    .attr('d', 'M0,-5L10,0L0,5')
+                    .attr('fill', arrow.color)
+                    .style('opacity', 0.8);
+            });
+
+            g = svg.append('g');
+
+            // Zoom behavior
+            zoom = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+
+            svg.call(zoom);
+
+            // Click on background to clear focus
+            svg.on('click', function(event) {
+                if (event.target === this || event.target === svg.node()) {
+                    clearFocus();
+                }
+            });
+        }
+
+        async function handleOpenAPIUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                console.log('No file selected');
+                return;
+            }
+
+            console.log('Loading OpenAPI file:', file.name);
+            updateStatus('⏳ OpenAPI 파일 로딩 중...');
+
+            try {
+                const text = await file.text();
+                console.log('File content loaded, parsing JSON...');
+                const data = JSON.parse(text);
+                
+                // OpenAPI 또는 Swagger 스펙 확인
+                if (!data.paths && !data.swagger && !data.openapi) {
+                    throw new Error('유효한 OpenAPI/Swagger 파일이 아닙니다');
+                }
+                
+                parseOpenAPI(data);
+                updateStatus(`✅ OpenAPI 로드 완료: ${nodes.length}개 API, ${links.length}개 의존성`);
+                renderGraph();
+            } catch (error) {
+                console.error('OpenAPI parsing error:', error);
+                updateStatus('❌ OpenAPI 파싱 실패: ' + error.message);
+                alert('OpenAPI 파일 처리 중 오류가 발생했습니다:\n' + error.message);
+            }
+        }
+
+        async function handleMetricsUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                console.log('No file selected');
+                return;
+            }
+
+            console.log('Loading metrics file:', file.name);
+            updateStatus('⏳ 메트릭 파일 로딩 중...');
+
+            try {
+                const text = await file.text();
+                console.log('File content loaded, parsing JSON...');
+                const data = JSON.parse(text);
+                
+                // 메트릭 데이터 검증
+                if (!Array.isArray(data) && typeof data !== 'object') {
+                    throw new Error('유효한 메트릭 파일이 아닙니다');
+                }
+                
+                parseMetrics(data);
+                updateStatus(`✅ 메트릭 로드 완료: ${metrics.size}개 API 메트릭`);
+                if (nodes.length > 0) {
+                    renderGraph();
+                }
+            } catch (error) {
+                console.error('Metrics parsing error:', error);
+                updateStatus('❌ 메트릭 파싱 실패: ' + error.message);
+                alert('메트릭 파일 처리 중 오류가 발생했습니다:\n' + error.message);
+            }
+        }
+
+        function parseOpenAPI(data) {
+            console.log('Parsing OpenAPI data...');
+            nodes = [];
+            links = [];
+            groups.clear();
+
+            const nodeMap = new Map();
+
+            // Parse paths - Swagger 2.0과 OpenAPI 3.0 모두 지원
+            const paths = data.paths || {};
+            let apiCount = 0;
+            
+            if (Object.keys(paths).length === 0) {
+                console.warn('No paths found in OpenAPI spec');
+                updateStatus('⚠️ API 경로가 없습니다');
+                return;
+            }
+
+            Object.entries(paths).forEach(([path, methods]) => {
+                if (!methods || typeof methods !== 'object') return;
+                
+                Object.entries(methods).forEach(([method, spec]) => {
+                    // 메소드가 아닌 속성들 건너뛰기 (parameters, servers 등)
+                    if (!['get', 'post', 'put', 'patch', 'delete', 'options', 'head'].includes(method.toLowerCase())) {
+                        return;
+                    }
+                    
+                    if (typeof spec !== 'object') return;
+
+                    const apiId = `${method.toUpperCase()}_${path}`;
+                    const apiName = spec.summary || spec.operationId || `${method.toUpperCase()} ${path}`;
+                    const group = normalizeGroup(extractGroup(path, spec));
+
+                    const node = {
+                        id: apiId,
+                        apiName: apiName,
+                        method: method.toUpperCase(),
+                        path: path,
+                        group: group,
+                        description: spec.description || '',
+                        tags: spec.tags || [],
+                        operationId: spec.operationId || ''
+                    };
+
+                    nodes.push(node);
+                    nodeMap.set(apiId, node);
+                    apiCount++;
+
+                    // Update groups
+                    if (!groups.has(group)) {
+                        groups.set(group, {
+                            name: group,
+                            apis: [],
+                            color: groupColors[group] || '#8892b0'
+                        });
+                    }
+                    groups.get(group).apis.push(node);
+                });
+            });
+
+            console.log(`Parsed ${apiCount} APIs in ${groups.size} groups`);
+
+            // Extract dependencies
+            analyzeDependencies();
+
+            // Detect cycles
+            detectCycles();
+            updateGroupsList();
+            updateStats();
+        }
+
+        function extractGroup(path, spec) {
+            // Extract from tags first
+            if (spec.tags && spec.tags.length > 0) {
+                return spec.tags[0].toLowerCase();
+            }
+
+            // Extract from path
+            const pathParts = path.split('/').filter(p => p && !p.startsWith('{'));
+            if (pathParts.length > 0) {
+                return pathParts[0].toLowerCase();
+            }
+
+            return 'general';
+        }
+
+        function normalizeGroup(rawGroup) {
+            const lower = rawGroup.toLowerCase();
+            
+            // Check direct mappings
+            for (const [key, normalized] of Object.entries(groupMappings)) {
+                if (lower.includes(key)) {
+                    return normalized;
+                }
+            }
+
+            // Return original if no mapping found
+            return rawGroup;
+        }
+
+        function analyzeDependencies() {
+            links = [];
+            
+            // 더 포괄적인 의존성 분석
+            nodes.forEach(source => {
+                nodes.forEach(target => {
+                    if (source.id === target.id) return;
+                    
+                    // Extract resource names from paths
+                    const sourcePath = source.path.toLowerCase();
+                    const targetPath = target.path.toLowerCase();
+                    const sourceParts = source.path.split('/').filter(p => p && !p.startsWith('{'));
+                    const targetParts = target.path.split('/').filter(p => p && !p.startsWith('{'));
+                    const sourceResource = sourceParts[0] || '';
+                    const targetResource = targetParts[0] || '';
+                    
+                    // 1. 같은 리소스의 CRUD 작업들
+                    if (sourceResource && targetResource && 
+                        (sourceResource === targetResource || 
+                         sourceResource.includes(targetResource) || 
+                         targetResource.includes(sourceResource))) {
+                        
+                        // POST -> GET/PUT/DELETE
+                        if (source.method === 'POST' && ['GET', 'PUT', 'DELETE', 'PATCH'].includes(target.method)) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'crud',
+                                weight: 3,
+                                color: '#64ffda',
+                                description: 'Create → Read/Update/Delete'
+                            });
+                        }
+                        
+                        // GET -> PUT/DELETE
+                        if (source.method === 'GET' && ['PUT', 'DELETE', 'PATCH'].includes(target.method)) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'read-modify',
+                                weight: 2,
+                                color: '#82aaff',
+                                description: 'Read → Modify'
+                            });
+                        }
+                        
+                        // GET list -> GET detail
+                        if (source.method === 'GET' && !source.path.includes('{') && 
+                            target.method === 'GET' && target.path.includes('{') &&
+                            sourceResource === targetResource) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'list-detail',
+                                weight: 2,
+                                color: '#ffcb6b',
+                                description: 'List → Detail'
+                            });
+                        }
+                    }
+                    
+                    // 2. 다른 그룹 간 의존성 - 매우 중요!
+                    if (source.group !== target.group) {
+                        // Auth -> Any (인증 필요)
+                        if ((source.group.includes('인증') || source.group.includes('auth')) && 
+                            (source.path.includes('login') || source.path.includes('auth'))) {
+                            // 모든 비-GET 메소드는 인증이 필요
+                            if (target.method !== 'GET' || target.path.includes('profile') || target.path.includes('my')) {
+                                links.push({
+                                    source: source.id,
+                                    target: target.id,
+                                    type: 'auth-required',
+                                    weight: 1,
+                                    color: '#c792ea',
+                                    description: 'Authentication Required'
+                                });
+                            }
+                        }
+                        
+                        // User -> Order (사용자가 주문 생성)
+                        if ((source.group.includes('사용자') || source.group.includes('user')) &&
+                            (target.group.includes('주문') || target.group.includes('order'))) {
+                            if (source.method === 'GET' && target.method === 'POST') {
+                                links.push({
+                                    source: source.id,
+                                    target: target.id,
+                                    type: 'user-action',
+                                    weight: 2,
+                                    color: '#89ddff',
+                                    description: 'User → Order'
+                                });
+                            }
+                        }
+                        
+                        // Order -> Product (주문이 상품 참조)
+                        if ((source.group.includes('주문') || source.group.includes('order') || source.group.includes('cart')) &&
+                            (target.group.includes('상품') || target.group.includes('product'))) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'reference',
+                                weight: 3,
+                                color: '#f78c6c',
+                                description: 'Order → Product Reference'
+                            });
+                        }
+                        
+                        // Order -> Payment (주문 후 결제)
+                        if ((source.group.includes('주문') || source.group.includes('order')) &&
+                            (target.group.includes('결제') || target.group.includes('payment'))) {
+                            if (source.method === 'POST' && target.method === 'POST') {
+                                links.push({
+                                    source: source.id,
+                                    target: target.id,
+                                    type: 'workflow',
+                                    weight: 4,
+                                    color: '#f07178',
+                                    description: 'Order → Payment Flow'
+                                });
+                            }
+                        }
+                        
+                        // Product -> Review (상품에 리뷰 작성)
+                        if ((source.group.includes('상품') || source.group.includes('product')) &&
+                            (target.path.includes('review') || target.path.includes('comment'))) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'composition',
+                                weight: 2,
+                                color: '#c3e88d',
+                                description: 'Product → Review'
+                            });
+                        }
+                        
+                        // Admin -> All (관리자는 모든 리소스 접근)
+                        if ((source.group.includes('관리') || source.group.includes('admin')) &&
+                            !target.group.includes('관리') && !target.group.includes('admin')) {
+                            if (source.method === 'GET' && ['PUT', 'DELETE'].includes(target.method)) {
+                                links.push({
+                                    source: source.id,
+                                    target: target.id,
+                                    type: 'admin-control',
+                                    weight: 1,
+                                    color: '#ff5370',
+                                    description: 'Admin Control'
+                                });
+                            }
+                        }
+                        
+                        // Report -> Data sources (리포트가 데이터 소스 참조)
+                        if ((source.group.includes('리포트') || source.group.includes('report') || source.group.includes('dashboard')) &&
+                            ['GET'].includes(target.method)) {
+                            links.push({
+                                source: source.id,
+                                target: target.id,
+                                type: 'data-source',
+                                weight: 1,
+                                color: '#b2ccd6',
+                                description: 'Report Data Source'
+                            });
+                        }
+                    }
+                    
+                    // 3. 경로 패턴 기반 의존성
+                    // 부모-자식 관계 (예: /users -> /users/{id}/profile)
+                    if (targetPath.startsWith(sourcePath.replace(/\{[^}]+\}/g, '')) && 
+                        sourcePath !== targetPath &&
+                        sourcePath.length < targetPath.length) {
+                        links.push({
+                            source: source.id,
+                            target: target.id,
+                            type: 'parent-child',
+                            weight: 2,
+                            color: '#c3e88d',
+                            description: 'Parent → Child Resource'
+                        });
+                    }
+                    
+                    // 4. 메소드 체인 패턴
+                    // GET -> POST (조회 후 생성)
+                    if (source.method === 'GET' && target.method === 'POST' &&
+                        sourceResource === targetResource) {
+                        links.push({
+                            source: source.id,
+                            target: target.id,
+                            type: 'read-create',
+                            weight: 1,
+                            color: '#b2ccd6',
+                            description: 'Read → Create'
+                        });
+                    }
+                    
+                    // POST -> GET (생성 후 조회)
+                    if (source.method === 'POST' && target.method === 'GET' &&
+                        sourceResource === targetResource && target.path.includes('{')) {
+                        links.push({
+                            source: source.id,
+                            target: target.id,
+                            type: 'create-read',
+                            weight: 2,
+                            color: '#89ddff',
+                            description: 'Create → Read'
+                        });
+                    }
+                });
+            });
+            
+            // 중복 제거 - 가장 강한 연결만 유지
+            const uniqueLinks = new Map();
+            links.forEach(link => {
+                const key = `${link.source}->${link.target}`;
+                if (!uniqueLinks.has(key) || uniqueLinks.get(key).weight < link.weight) {
+                    uniqueLinks.set(key, link);
+                }
+            });
+            
+            links = Array.from(uniqueLinks.values());
+            console.log(`Generated ${links.length} unique dependencies`);
+        }
+
+        function parseMetrics(data) {
+            console.log('Parsing metrics data...');
+            metrics.clear();
+
+            // 배열 형태의 메트릭 데이터 처리
+            if (Array.isArray(data)) {
+                data.forEach((metric, index) => {
+                    // 다양한 형식 지원
+                    const key = metric.id || 
+                                metric.apiId || 
+                                `${metric.method}_${metric.path}` ||
+                                `metric_${index}`;
+                    
+                    metrics.set(key, {
+                        calls: metric.calls || metric.count || metric.requests || 0,
+                        p95: metric.p95 || metric.latency || metric.responseTime || 0,
+                        errorRate: metric.errorRate || metric.errors || metric.error_rate || 0
+                    });
+                });
+            } 
+            // 객체 형태의 메트릭 데이터 처리
+            else if (typeof data === 'object') {
+                Object.entries(data).forEach(([key, metric]) => {
+                    if (typeof metric === 'object') {
+                        metrics.set(key, {
+                            calls: metric.calls || metric.count || metric.requests || 0,
+                            p95: metric.p95 || metric.latency || metric.responseTime || 0,
+                            errorRate: metric.errorRate || metric.errors || metric.error_rate || 0
+                        });
+                    }
+                });
+            }
+
+            console.log(`Parsed ${metrics.size} metrics`);
+        }
+
+        function detectCycles() {
+            // Tarjan's strongly connected components algorithm
+            cycles = [];
+            const index = new Map();
+            const lowlink = new Map();
+            const stack = [];
+            const onStack = new Set();
+            let idx = 0;
+
+            function strongconnect(v) {
+                index.set(v, idx);
+                lowlink.set(v, idx);
+                idx++;
+                stack.push(v);
+                onStack.add(v);
+
+                // Consider successors
+                const successors = links
+                    .filter(l => l.source === v || (l.source.id && l.source.id === v))
+                    .map(l => typeof l.target === 'string' ? l.target : l.target.id);
+
+                for (const w of successors) {
+                    if (!index.has(w)) {
+                        strongconnect(w);
+                        lowlink.set(v, Math.min(lowlink.get(v), lowlink.get(w)));
+                    } else if (onStack.has(w)) {
+                        lowlink.set(v, Math.min(lowlink.get(v), index.get(w)));
+                    }
+                }
+
+                // If v is a root node, pop the stack and print an SCC
+                if (lowlink.get(v) === index.get(v)) {
+                    const component = [];
+                    let w;
+                    do {
+                        w = stack.pop();
+                        onStack.delete(w);
+                        component.push(w);
+                    } while (w !== v);
+
+                    if (component.length > 1) {
+                        cycles.push(component);
+                    }
+                }
+            }
+
+            // Run algorithm for all nodes
+            for (const node of nodes) {
+                if (!index.has(node.id)) {
+                    strongconnect(node.id);
+                }
+            }
+
+            updateCyclesList();
+        }
+
+        function updateGroupsList() {
+            const listEl = document.getElementById('groups-list');
+            listEl.innerHTML = '';
+
+            if (groups.size === 0) {
+                listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📂</div>데이터를 로드하세요</div>';
+                return;
+            }
+
+function updateLegend() {
+            const legend = document.querySelector('.legend');
+            if (!legend) return;
+            legend.innerHTML = '';
+            const items = Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+            items.forEach(gp => {
+                const div = document.createElement('div');
+                div.className = 'legend-item';
+                div.innerHTML = `<div class="legend-color" style="background: ${gp.color};"></div><span>${gp.name}</span>`;
+                legend.appendChild(div);
+            });
+        }
+
+            groups.forEach((group, groupName) => {
+                const item = document.createElement('div');
+                item.className = 'group-item';
+                if (focusedGroup === groupName) {
+                    item.classList.add('active');
+                }
+                item.innerHTML = `
+                    <span class="group-name">${groupName}</span>
+                    <span class="group-count">${group.apis.length}</span>
+                `;
+                item.addEventListener('click', () => focusGroup(groupName));
+                listEl.appendChild(item);
+            });
+        }
+
+        function updateCyclesList() {
+            const section = document.getElementById('cycles-section');
+            const listEl = document.getElementById('cycles-list');
+            
+            if (cycles.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            listEl.innerHTML = '';
+
+            cycles.forEach((cycle, idx) => {
+                const item = document.createElement('div');
+                item.className = 'cycle-item';
+                item.innerHTML = `
+                    <div>순환 의존성 #${idx + 1}</div>
+                    <div class="cycle-nodes">${cycle.slice(0, 3).join(' → ')}${cycle.length > 3 ? ' ...' : ''}</div>
+                `;
+                item.addEventListener('click', () => focusCycle(cycle));
+                listEl.appendChild(item);
+            });
+        }
+
+        function renderGraph() {
+            if (currentView === 'matrix') {
+                renderMatrix();
+                return;
+            }
+
+            // Show SVG, hide matrix
+            document.getElementById('graph-svg').style.display = 'block';
+            document.getElementById('matrix-container').style.display = 'none';
+
+            // Clear existing
+            g.selectAll('*').remove();
+
+            const canvas = document.getElementById('canvas');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+
+            if (currentView === 'group') {
+                renderGroupView(width, height);
+            } else {
+                renderDetailView(width, height);
+            }
+        }
+
+        function renderGroupView(width, height) {
+            // Prepare group nodes and links
+            const groupNodes = Array.from(groups.values()).map(g => ({
+                ...g,
+                id: g.name,
+                radius: Math.sqrt(g.apis.length) * 20 + 30
+            }));
+
+            // Aggregate links between groups
+            const groupLinkMap = new Map();
+            links.forEach(link => {
+                const sourceNode = nodes.find(n => n.id === link.source);
+                const targetNode = nodes.find(n => n.id === link.target);
+                if (sourceNode && targetNode && sourceNode.group !== targetNode.group) {
+                    const key = `${sourceNode.group}->${targetNode.group}`;
+                    if (!groupLinkMap.has(key)) {
+                        groupLinkMap.set(key, {
+                            source: sourceNode.group,
+                            target: targetNode.group,
+                            count: 0,
+                            weight: 0
+                        });
+                    }
+                    const groupLink = groupLinkMap.get(key);
+                    groupLink.count++;
+                    groupLink.weight += link.weight || 1;
+                }
+            });
+
+            const groupLinks = Array.from(groupLinkMap.values());
+
+            // Setup simulation
+            simulation = d3.forceSimulation(groupNodes)
+                .force('link', d3.forceLink(groupLinks).id(d => d.id).distance(200))
+                .force('charge', d3.forceManyBody().strength(-800))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => d.radius + 20));
+
+            // Render links - 더 얇게
+            const link = g.append('g')
+                .selectAll('line')
+                .data(groupLinks)
+                .enter().append('line')
+                .attr('class', 'link')
+                .attr('stroke', '#666')
+                .attr('stroke-width', d => Math.max(0.6, Math.log(d.count + 1) * 0.6))  // 더 얇게
+                .attr('marker-end', 'url(#arrow-normal)');
+
+            // Render nodes
+            const node = g.append('g')
+                .selectAll('.node')
+                .data(groupNodes)
+                .enter().append('g')
+                .attr('class', 'node')
+                .call(drag(simulation))
+                .on('click', (event, d) => {
+                    event.stopPropagation();
+                    focusGroup(d.name);
+                })
+                .on('mouseover', showGroupTooltip)
+                .on('mouseout', hideTooltip);
+
+            // Group circles
+            node.append('circle')
+                .attr('class', 'group-node')
+                .attr('r', d => d.radius)
+                .attr('fill', d => d.color)
+                .attr('stroke', d => d.color)
+                .on('mouseover', (event, d) => { highlightGroupConnections(d.name); })
+                .on('mouseout', () => { clearGroupHighlights(); })
+                .on('click', (event, d) => { event.stopPropagation(); focusGroup(d.name); highlightGroupConnections(d.name); })
+    ;
+
+            // Group labels
+            node.append('text')
+                .attr('class', 'group-label')
+                .attr('dy', -5)
+                .text(d => d.name);
+
+            // API count
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', 10)
+                .text(d => `${d.apis.length} APIs`);
+
+            // Simulation tick
+            simulation.on('tick', () => {
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+        }
+
+        function renderDetailView(width, height) {
+            // Setup simulation with nodes and links
+            const simNodes = nodes.map(n => ({...n}));
+            const simLinks = links.map(l => ({...l}));
+
+            console.log(`Rendering detail view with ${simNodes.length} nodes and ${simLinks.length} links`);
+
+            simulation = d3.forceSimulation(simNodes)
+                .force('link', d3.forceLink(simLinks)
+                    .id(d => d.id)
+                    .distance(d => 120 + (d.weight * 10)))
+                .force('charge', d3.forceManyBody().strength(-600))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(35))
+                .force('x', d3.forceX(width / 2).strength(0.05))
+                .force('y', d3.forceY(height / 2).strength(0.05));
+
+            // Create container groups
+            const linkGroup = g.append('g').attr('class', 'links');
+            const nodeGroup = g.append('g').attr('class', 'nodes');
+
+            // Render links with arrows
+            const link = linkGroup.selectAll('.link')
+                .data(simLinks)
+                .enter().append('line')
+                .attr('class', 'link')
+                .attr('stroke', d => d.color || '#666')
+                .attr('stroke-width', d => Math.max(0.6, Math.sqrt(d.weight) * 0.6))  // 더 얇게
+                .attr('stroke-opacity', 0.6)
+                .attr('marker-end', d => `url(#arrow-${d.type || 'normal'})`)
+                .style('cursor', 'pointer')
+                .on('mouseover', function(event, d) {
+                    d3.select(this)
+                        .attr('stroke-width', Math.max(1.2, Math.sqrt(d.weight) * 0.9))
+                        .attr('stroke-opacity', 1);
+                    
+                    const sourceNode = simNodes.find(n => n.id === (d.source.id || d.source));
+                    const targetNode = simNodes.find(n => n.id === (d.target.id || d.target));
+                    
+                    const tooltip = document.getElementById('tooltip');
+                    tooltip.innerHTML = `
+                        <h4 style="color: #ffffff;">의존성: ${d.type}</h4>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">From:</span>
+                            <span class="tooltip-value">${sourceNode?.apiName || d.source}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">To:</span>
+                            <span class="tooltip-value">${targetNode?.apiName || d.target}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">타입:</span>
+                            <span class="tooltip-value">${d.description || d.type}</span>
+                        </div>
+                        <div class="tooltip-row">
+                            <span class="tooltip-label">가중치:</span>
+                            <span class="tooltip-value">${d.weight}</span>
+                        </div>
+                    `;
+                    tooltip.style.left = event.pageX + 10 + 'px';
+                    tooltip.style.top = event.pageY + 10 + 'px';
+                    tooltip.classList.add('show');
+                })
+                .on('mouseout', function(event, d) {
+                    d3.select(this)
+                        .attr('stroke-width', Math.max(0.6, Math.sqrt(d.weight) * 0.6))
+                        .attr('stroke-opacity', 0.6);
+                    hideTooltip();
+                });
+
+            // Create gradients for nodes
+            const gradient = svg.select('defs')
+                .selectAll('radialGradient')
+                .data(simNodes)
+                .enter().append('radialGradient')
+                .attr('id', d => `gradient-${d.id.replace(/[^a-zA-Z0-9]/g, '')}`)
+                .attr('cx', '30%')
+                .attr('cy', '30%');
+
+            gradient.append('stop')
+                .attr('offset', '0%')
+                .attr('stop-color', d => {
+                    const baseColor = groupColors[d.group] || '#8892b0';
+                    return d3.color(baseColor).brighter(0.5);
+                });
+
+            gradient.append('stop')
+                .attr('offset', '100%')
+                .attr('stop-color', d => groupColors[d.group] || '#8892b0');
+
+            // Render nodes
+            const node = nodeGroup.selectAll('.node')
+                .data(simNodes)
+                .enter().append('g')
+                .attr('class', 'node')
+                .style('cursor', 'pointer')
+                .call(drag(simulation))
+                .on('click', (event, d) => {
+                    event.stopPropagation();
+                    focusNode(d);
+                })
+                .on('mouseover', showNodeTooltip)
+                .on('mouseout', hideTooltip);
+
+            // Node circles
+            node.append('circle')
+                .attr('r', d => {
+                    const metric = metrics.get(d.id);
+                    const baseSize = 20;
+                    if (metric) {
+                        return Math.max(15, Math.min(35, baseSize + Math.sqrt(metric.calls / 100)));
+                    }
+                    return baseSize;
+                })
+                .attr('fill', d => `url(#gradient-${d.id.replace(/[^a-zA-Z0-9]/g, '')})`)
+                .attr('stroke', '#fff')
+                .attr('stroke-width', 2)
+                .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))');
+
+            // Method label (above node)
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', -28)
+                .attr('text-anchor', 'middle')
+                .text(d => d.method)
+                .style('font-size', '11px')
+                .style('font-weight', 'bold')
+                .style('fill', d => {
+                    const methodColor = {
+                        'GET': '#64ffda',
+                        'POST': '#f07178',
+                        'PUT': '#ffcb6b',
+                        'PATCH': '#ffcb6b',
+                        'DELETE': '#c792ea'
+                    };
+                    return methodColor[d.method] || '#8892b0';
+                })
+                .style('text-shadow', '0 1px 2px rgba(0,0,0,0.8)');
+
+            // Resource/Function name label (center of node)
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', 4)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    // 기능명 우선 표시 (summary > operationId > path)
+                    if (d.apiName && d.apiName !== d.id) {
+                        // apiName이 너무 길면 줄임
+                        return d.apiName.length > 20 ? d.apiName.substring(0, 20) + '...' : d.apiName;
+                    }
+                    // apiName이 없으면 경로의 마지막 부분 사용
+                    const parts = d.path.split('/').filter(p => p && !p.startsWith('{'));
+                    const resource = parts[parts.length - 1] || parts[0] || 'api';
+                    return resource.length > 15 ? resource.substring(0, 15) + '...' : resource;
+                })
+                .style('font-size', '11px')
+                .style('font-weight', '500')
+                .style('fill', '#ffffff')
+                .style('text-shadow', '0 1px 3px rgba(0,0,0,0.9)')
+                .style('pointer-events', 'none');
+
+            // Path label (below node) - smaller
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', 38)
+                .attr('text-anchor', 'middle')
+                .text(d => {
+                    // 경로를 간략하게 표시
+                    const shortPath = d.path.length > 20 ? 
+                        '...' + d.path.substring(d.path.length - 17) : d.path;
+                    return shortPath;
+                })
+                .style('font-size', '9px')
+                .style('fill', '#8892b0')
+                .style('opacity', 0.8)
+                .style('text-shadow', '0 1px 2px rgba(0,0,0,0.8)');
+
+            // Group label (very small, above method)
+            node.append('text')
+                .attr('class', 'node-label')
+                .attr('dy', -40)
+                .attr('text-anchor', 'middle')
+                .text(d => d.group)
+                .style('font-size', '9px')
+                .style('fill', '#8892b0')
+                .style('opacity', 0.7);
+
+            // Add pulse animation for high-traffic nodes
+            node.each(function(d) {
+                const metric = metrics.get(d.id);
+                if (metric && metric.calls > 10000) {
+                    d3.select(this).select('circle')
+                        .style('animation', 'pulse 2s infinite');
+                }
+                
+                // Add error indicator for high error rate
+                if (metric && metric.errorRate > 0.05) {
+                    d3.select(this).append('circle')
+                        .attr('r', 4)
+                        .attr('cx', 18)
+                        .attr('cy', -18)
+                        .attr('fill', '#f07178')
+                        .style('filter', 'drop-shadow(0 0 3px rgba(240, 113, 120, 0.8))');
+                }
+            });
+
+            // Force simulation tick
+            simulation.on('tick', () => {
+                // Update link positions
+                link
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                // Update node positions
+                node.attr('transform', d => `translate(${d.x},${d.y})`);
+            });
+
+            // Run simulation for initial positioning
+            simulation.alpha(1).restart();
+
+            // Add CSS animation if not exists
+            if (!document.getElementById('pulse-animation')) {
+                const style = document.createElement('style');
+                style.id = 'pulse-animation';
+                style.textContent = `
+                    @keyframes pulse {
+                        0% { stroke-width: 2; stroke-opacity: 1; }
+                        50% { stroke-width: 4; stroke-opacity: 0.6; }
+                        100% { stroke-width: 2; stroke-opacity: 1; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+
+        function renderMatrix() {
+            // Hide SVG, show matrix
+            document.getElementById('graph-svg').style.display = 'none';
+            document.getElementById('matrix-container').style.display = 'block';
+
+            const container = document.getElementById('matrix-container');
+            container.innerHTML = '';
+
+            // Create SVG for matrix
+            const margin = {top: 100, right: 50, bottom: 50, left: 100};
+            const width = container.clientWidth - margin.left - margin.right;
+            const height = container.clientHeight - margin.top - margin.bottom;
+
+            const matrixSvg = d3.select(container)
+                .append('svg')
+                .attr('width', width + margin.left + margin.right)
+                .attr('height', height + margin.top + margin.bottom);
+
+            const matrixG = matrixSvg.append('g')
+                .attr('transform', `translate(${margin.left},${margin.top})`);
+
+            // Create group matrix
+            const groupNames = Array.from(groups.keys());
+            const cellSize = Math.min(width / groupNames.length, height / groupNames.length, 50);
+
+            // Build connection matrix
+            const matrix = [];
+            groupNames.forEach(source => {
+                groupNames.forEach(target => {
+                    const connections = links.filter(l => {
+                        const sourceNode = nodes.find(n => n.id === l.source);
+                        const targetNode = nodes.find(n => n.id === l.target);
+                        return sourceNode?.group === source && targetNode?.group === target;
+                    });
+                    if (connections.length > 0) {
+                        matrix.push({
+                            source: source,
+                            target: target,
+                            value: connections.length,
+                            weight: connections.reduce((sum, c) => sum + (c.weight || 1), 0)
+                        });
+                    }
+                });
+            });
+
+            // Scales
+            const xScale = d3.scaleBand()
+                .domain(groupNames)
+                .range([0, groupNames.length * cellSize])
+                .padding(0.1);
+
+            const yScale = d3.scaleBand()
+                .domain(groupNames)
+                .range([0, groupNames.length * cellSize])
+                .padding(0.1);
+
+            const colorScale = d3.scaleSequential()
+                .domain([0, d3.max(matrix, d => d.value)])
+                .interpolator(d3.interpolateBlues);
+
+            // Draw cells
+            matrixG.selectAll('.matrix-cell')
+                .data(matrix)
+                .enter().append('rect')
+                .attr('class', 'matrix-cell')
+                .attr('x', d => xScale(d.target))
+                .attr('y', d => yScale(d.source))
+                .attr('width', xScale.bandwidth())
+                .attr('height', yScale.bandwidth())
+                .attr('fill', d => colorScale(d.value))
+                .attr('stroke', '#2a2a4a')
+                .on('click', (event, d) => {
+                    showMatrixDetail(d.source, d.target);
+                })
+                .on('mouseover', (event, d) => {
+                    showMatrixTooltip(event, d);
+                })
+                .on('mouseout', hideTooltip);
+
+            // Add text labels for values
+            matrixG.selectAll('.matrix-text')
+                .data(matrix)
+                .enter().append('text')
+                .attr('x', d => xScale(d.target) + xScale.bandwidth() / 2)
+                .attr('y', d => yScale(d.source) + yScale.bandwidth() / 2)
+                .attr('dy', 4)
+                .attr('text-anchor', 'middle')
+                .style('fill', d => d.value > 3 ? 'white' : '#2a2a4a')
+                .style('font-size', '11px')
+                .style('pointer-events', 'none')
+                .text(d => d.value);
+
+            // Row labels
+            matrixG.selectAll('.row-label')
+                .data(groupNames)
+                .enter().append('text')
+                .attr('class', 'matrix-label')
+                .attr('x', -10)
+                .attr('y', d => yScale(d) + yScale.bandwidth() / 2)
+                .attr('text-anchor', 'end')
+                .attr('dy', 4)
+                .text(d => d.length > 10 ? d.substring(0, 10) + '...' : d);
+
+            // Column labels
+            matrixG.selectAll('.col-label')
+                .data(groupNames)
+                .enter().append('text')
+                .attr('class', 'matrix-label')
+                .attr('x', d => xScale(d) + xScale.bandwidth() / 2)
+                .attr('y', -10)
+                .attr('text-anchor', 'start')
+                .attr('transform', d => `rotate(-45, ${xScale(d) + xScale.bandwidth() / 2}, -10)`)
+                .text(d => d.length > 10 ? d.substring(0, 10) + '...' : d);
+        }
+
+        function drag(simulation) {
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+
+            return d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended);
+        }
+
+        function focusNode(node) {
+            focusedNode = node;
+            focusedGroup = null;
+            updateNodeInfo(node);
+            highlightNodeConnections(node);
+            
+            // Update group list to show active
+            document.querySelectorAll('.group-item').forEach(item => {
+                const name = item.querySelector('.group-name').textContent;
+                item.classList.toggle('active', name === node.group);
+            });
+        }
+
+        function focusGroup(groupName) {
+            focusedGroup = groupName;
+            focusedNode = null;
+            
+            const group = groups.get(groupName);
+            if (group) {
+                updateGroupInfo(group);
+                highlightGroupConnections(groupName);
+            }
+            
+            // Update group list
+            updateGroupsList();
+        }
+
+        function focusCycle(cycle) {
+            // Highlight cycle nodes
+            g.selectAll('.node')
+                .classed('highlighted', d => cycle.includes(d.id))
+                .classed('dimmed', d => !cycle.includes(d.id));
+
+            g.selectAll('.link')
+                .classed('highlighted', d => {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    return cycle.includes(sourceId) && cycle.includes(targetId);
+                })
+                .classed('dimmed', d => {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    return !cycle.includes(sourceId) || !cycle.includes(targetId);
+                });
+        }
+
+        function highlightNodeConnections(node) {
+            const connectedNodes = new Set([node.id]);
+            const incomingLinks = [];
+            const outgoingLinks = [];
+
+            // Find connected nodes and categorize links
+            links.forEach(link => {
+                const sourceId = link.source.id || link.source;
+                const targetId = link.target.id || link.target;
+                
+                if (targetId === node.id) {
+                    // Incoming link
+                    connectedNodes.add(sourceId);
+                    incomingLinks.push(link);
+                } else if (sourceId === node.id) {
+                    // Outgoing link
+                    connectedNodes.add(targetId);
+                    outgoingLinks.push(link);
+                }
+            });
+
+            // Update visual highlighting for nodes
+            g.selectAll('.node')
+                .classed('highlighted', d => d.id === node.id)
+                .classed('dimmed', d => !connectedNodes.has(d.id))
+                .selectAll('circle')
+                .style('stroke', d => {
+                    if (d.id === node.id) return '#64ffda';
+                    return connectedNodes.has(d.id) ? '#fff' : '#2a2a4a';
+                })
+                .style('stroke-width', d => {
+                    if (d.id === node.id) return 2.4;
+                    return connectedNodes.has(d.id) ? 1.2 : 0.8;
+                });
+
+            // Update visual highlighting for links with different colors and styles
+            g.selectAll('.link')
+                .style('stroke', function(d) {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    
+                    if (sourceId === node.id) {
+                        // Outgoing - 파란색
+                        return '#0c8ce9';
+                    } else if (targetId === node.id) {
+                        // Incoming - 주황색
+                        return '#EA4D08';
+                    }
+                    return d.color || '#666';
+                })
+                .style('stroke-dasharray', function(d) {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    
+                    if (sourceId === node.id) {
+                        // Outgoing - 점선
+                        return '5,5';
+                    } else if (targetId === node.id) {
+                        // Incoming - 실선
+                        return 'none';
+                    }
+                    return 'none';
+                })
+                .style('stroke-width', function(d) {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    
+                    if (sourceId === node.id || targetId === node.id) {
+                        return Math.max(1.2, Math.sqrt(d.weight) * 0.9);
+                    }
+                    return Math.max(0.6, Math.sqrt(d.weight) * 0.6);
+                })
+                .style('stroke-opacity', function(d) {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    
+                    if (sourceId === node.id || targetId === node.id) {
+                        return 1;
+                    }
+                    return 0.1;
+                })
+                .attr('marker-end', function(d) {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    
+                    if (sourceId === node.id) {
+                        return 'url(#arrow-outgoing)';
+                    } else if (targetId === node.id) {
+                        return 'url(#arrow-incoming)';
+                    }
+                    return `url(#arrow-${d.type || 'normal'})`;
+                })
+                .classed('highlighted', d => {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    return sourceId === node.id || targetId === node.id;
+                })
+                .classed('dimmed', d => {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    return sourceId !== node.id && targetId !== node.id;
+                });
+
+            // Update node labels visibility
+            g.selectAll('.node-label')
+                .style('opacity', function() {
+                    const parentNode = d3.select(this.parentNode).datum();
+                    return connectedNodes.has(parentNode.id) ? 1 : 0.3;
+                });
+        }
+
+        function highlightGroupConnections(groupName) {
+            const connectedGroups = new Set([groupName]);
+            
+            // Find connected groups
+            links.forEach(link => {
+                const sourceNode = nodes.find(n => n.id === link.source);
+                const targetNode = nodes.find(n => n.id === link.target);
+                if (sourceNode?.group === groupName) {
+                    connectedGroups.add(targetNode?.group);
+                
+            // Update visual highlighting for links with different colors and styles (group-level)
+            g.selectAll('.link')
+                .style('stroke', function(d) {
+                    const sourceNode = nodes.find(n => n.id === d.source);
+                    const targetNode = nodes.find(n => n.id === d.target);
+                    if (sourceNode?.group === groupName) {
+                        // Outgoing from group - 파란색
+                        return '#0c8ce9';
+                    } else if (targetNode?.group === groupName) {
+                        // Incoming to group - 주황색
+                        return '#EA4D08';
+                    }
+                    return d.color || '#666';
+                })
+                .style('stroke-dasharray', function(d) {
+                    const sourceNode = nodes.find(n => n.id === d.source);
+                    const targetNode = nodes.find(n => n.id === d.target);
+                    if (sourceNode?.group === groupName) {
+                        return '5,5';
+                    } else if (targetNode?.group === groupName) {
+                        return 'none';
+                    }
+                    return 'none';
+                })
+                .style('stroke-width', function(d) {
+                    const sourceNode = nodes.find(n => n.id === d.source);
+                    const targetNode = nodes.find(n => n.id === d.target);
+                    if (sourceNode?.group === groupName || targetNode?.group === groupName) {
+                        return Math.max(1.2, Math.sqrt(d.weight) * 0.9);
+                    }
+                    return Math.max(0.6, Math.sqrt(d.weight) * 0.6);
+                })
+                .attr('marker-end', function(d) {
+                    const sourceNode = nodes.find(n => n.id === d.source);
+                    const targetNode = nodes.find(n => n.id === d.target);
+                    if (sourceNode?.group === groupName) {
+                        return 'url(#arrow-outgoing)';
+                    } else if (targetNode?.group === groupName) {
+                        return 'url(#arrow-incoming)';
+                    }
+                    return `url(#arrow-${d.type || 'normal'})`;
+                })
+                .style('stroke-opacity', function(d) {
+                    const sourceNode = nodes.find(n => n.id === d.source);
+                    const targetNode = nodes.find(n => n.id === d.target);
+                    if (sourceNode?.group === groupName || targetNode?.group === groupName) {
+                        return 1;
+                    }
+                    return 0.1;
+                });
+
+        }
+                if (targetNode?.group === groupName) {
+                    connectedGroups.add(sourceNode?.group);
+                }
+            });
+
+            // Update visual highlighting
+            g.selectAll('.group-node')
+                .classed('focused', d => d.name === groupName)
+                .classed('dimmed', d => !connectedGroups.has(d.name));
+
+            g.selectAll('.link')
+                .classed('highlighted', d => d.source.name === groupName || d.target.name === groupName)
+                .classed('dimmed', d => !connectedGroups.has(d.source.name) && !connectedGroups.has(d.target.name));
+        }
+
+        function clearFocus() {
+            focusedNode = null;
+            focusedGroup = null;
+
+            // Clear highlights
+            g.selectAll('.node, .group-node').classed('highlighted focused dimmed', false);
+            g.selectAll('.link').classed('highlighted dimmed', false);
+            
+            // Clear active group
+            document.querySelectorAll('.group-item').forEach(item => {
+                item.classList.remove('active');
+            });
+
+            // Show default info
+            document.getElementById('node-info').style.display = 'none';
+            document.getElementById('default-info').style.display = 'block';
+        }
+
+        function updateNodeInfo(node) {
+            document.getElementById('default-info').style.display = 'none';
+            document.getElementById('node-info').style.display = 'block';
+
+            // Update selected info
+            document.getElementById('selected-name').textContent = node.apiName;
+            document.getElementById('selected-details').innerHTML = `
+                <div><strong>메소드:</strong> ${node.method}</div>
+                <div><strong>경로:</strong> ${node.path}</div>
+                <div><strong>그룹:</strong> ${node.group}</div>
+                ${node.description ? `<div><strong>설명:</strong> ${node.description}</div>` : ''}
+            `;
+
+            // Calculate risk score
+            const riskScore = calculateRiskScore(node);
+            document.getElementById('risk-score').textContent = riskScore.score.toFixed(1);
+            document.getElementById('risk-gauge').style.width = `${riskScore.score * 10}%`;
+            document.getElementById('risk-detail').innerHTML = riskScore.details.join('<br>');
+
+            // Update dependencies
+            updateDependencies(node);
+
+            // Update impact
+            updateImpact(node);
+        }
+
+        function updateGroupInfo(group) {
+            document.getElementById('default-info').style.display = 'none';
+            document.getElementById('node-info').style.display = 'block';
+
+            // Update selected info
+            document.getElementById('selected-name').textContent = group.name;
+            document.getElementById('selected-details').innerHTML = `
+                <div><strong>API 수:</strong> ${group.apis.length}</div>
+                <div><strong>메소드 분포:</strong></div>
+                ${Object.entries(group.apis.reduce((acc, api) => {
+                    acc[api.method] = (acc[api.method] || 0) + 1;
+                    return acc;
+                }, {})).map(([method, count]) => 
+                    `<div style="margin-left: 10px;">${method}: ${count}</div>`
+                ).join('')}
+            `;
+
+            // Calculate group risk
+            const avgRisk = group.apis.reduce((sum, api) => sum + calculateRiskScore(api).score, 0) / group.apis.length;
+            document.getElementById('risk-score').textContent = avgRisk.toFixed(1);
+            document.getElementById('risk-gauge').style.width = `${avgRisk * 10}%`;
+            document.getElementById('risk-detail').innerHTML = `그룹 평균 위험도: ${avgRisk.toFixed(1)}`;
+
+            // Update group dependencies
+            updateGroupDependencies(group);
+        }
+
+        function calculateRiskScore(node) {
+            let score = 0;
+            const details = [];
+
+            // Count dependencies
+            const inDeps = links.filter(l => (l.target.id || l.target) === node.id).length;
+            const outDeps = links.filter(l => (l.source.id || l.source) === node.id).length;
+
+            score += inDeps * 2 + outDeps;
+            details.push(`• ${inDeps}개의 들어오는 의존성 (×2)`);
+            details.push(`• ${outDeps}개의 나가는 의존성 (×1)`);
+
+            // Method weight
+            if (node.method === 'DELETE') {
+                score *= 1.2;
+                details.push(`• DELETE 메소드 (+20% 위험도)`);
+            } else if (node.method === 'PUT' || node.method === 'PATCH') {
+                score *= 1.1;
+                details.push(`• 수정 메소드 (+10% 위험도)`);
+            }
+
+            // Group weight
+            if (node.group.includes('인증') || node.group.includes('보안')) {
+                score *= 1.5;
+                details.push(`• 보안 관련 그룹 (+50% 위험도)`);
+            } else if (node.group.includes('결제')) {
+                score *= 1.3;
+                details.push(`• 결제 관련 그룹 (+30% 위험도)`);
+            }
+
+            // Metrics weight
+            const metric = metrics.get(node.id);
+            if (metric) {
+                if (metric.errorRate > 0.05) {
+                    score *= 1.2;
+                    details.push(`• 높은 오류율: ${(metric.errorRate * 100).toFixed(1)}%`);
+                }
+                if (metric.p95 > 1000) {
+                    score *= 1.1;
+                    details.push(`• 높은 지연시간: ${metric.p95}ms (P95)`);
+                }
+                if (metric.calls > 10000) {
+                    score *= 1.1;
+                    details.push(`• 높은 호출량: ${metric.calls.toLocaleString()}회`);
+                }
+            }
+
+            // Normalize score
+            score = Math.min(10, score);
+
+            const level = score < 3 ? '낮음' : score < 7 ? '중간' : '높음';
+            details.unshift(`<strong>위험도: ${level}</strong>`);
+
+            return { score, details };
+        }
+
+        function updateDependencies(node) {
+            const inDeps = [];
+            const outDeps = [];
+
+            links.forEach(link => {
+                const sourceId = link.source.id || link.source;
+                const targetId = link.target.id || link.target;
+                
+                if (targetId === node.id) {
+                    const sourceNode = nodes.find(n => n.id === sourceId);
+                    if (sourceNode) {
+                        inDeps.push({
+                            node: sourceNode,
+                            type: link.type,
+                            weight: link.weight
+                        });
+                    }
+                } else if (sourceId === node.id) {
+                    const targetNode = nodes.find(n => n.id === targetId);
+                    if (targetNode) {
+                        outDeps.push({
+                            node: targetNode,
+                            type: link.type,
+                            weight: link.weight
+                        });
+                    }
+                }
+            });
+
+            // Update IN dependencies
+            const inList = document.getElementById('in-dependencies');
+            inList.innerHTML = inDeps.length === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
+            inDeps.forEach(dep => {
+                const item = document.createElement('div');
+                item.className = 'dependency-item incoming';
+                item.innerHTML = `
+                    <div>${dep.node.apiName}</div>
+                    <div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>
+                `;
+                item.addEventListener('click', () => focusNode(dep.node));
+                inList.appendChild(item);
+            });
+
+            // Update OUT dependencies
+            const outList = document.getElementById('out-dependencies');
+            outList.innerHTML = outDeps.length === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
+            outDeps.forEach(dep => {
+                const item = document.createElement('div');
+                item.className = 'dependency-item outgoing';
+                item.innerHTML = `
+                    <div>${dep.node.apiName}</div>
+                    <div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>
+                `;
+                item.addEventListener('click', () => focusNode(dep.node));
+                outList.appendChild(item);
+            });
+        }
+
+        function updateGroupDependencies(group) {
+            const inGroups = new Map();
+            const outGroups = new Map();
+
+            // Collect dependencies for all APIs in the group
+            group.apis.forEach(api => {
+                links.forEach(link => {
+                    const sourceId = link.source.id || link.source;
+                    const targetId = link.target.id || link.target;
+                    
+                    if (targetId === api.id) {
+                        const sourceNode = nodes.find(n => n.id === sourceId);
+                        if (sourceNode && sourceNode.group !== group.name) {
+                            if (!inGroups.has(sourceNode.group)) {
+                                inGroups.set(sourceNode.group, []);
+                            }
+                            inGroups.get(sourceNode.group).push(sourceNode);
+                        }
+                    } else if (sourceId === api.id) {
+                        const targetNode = nodes.find(n => n.id === targetId);
+                        if (targetNode && targetNode.group !== group.name) {
+                            if (!outGroups.has(targetNode.group)) {
+                                outGroups.set(targetNode.group, []);
+                            }
+                            outGroups.get(targetNode.group).push(targetNode);
+                        }
+                    }
+                });
+            });
+
+            // Update IN dependencies
+            const inList = document.getElementById('in-dependencies');
+            inList.innerHTML = inGroups.size === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
+            inGroups.forEach((apis, groupName) => {
+                const item = document.createElement('div');
+                item.className = 'dependency-item incoming';
+                item.innerHTML = `
+                    <div>${groupName}</div>
+                    <div class="dependency-type">${apis.length}개 연결</div>
+                `;
+                item.addEventListener('click', () => focusGroup(groupName));
+                inList.appendChild(item);
+            });
+
+            // Update OUT dependencies
+            const outList = document.getElementById('out-dependencies');
+            outList.innerHTML = outGroups.size === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
+            outGroups.forEach((apis, groupName) => {
+                const item = document.createElement('div');
+                item.className = 'dependency-item outgoing';
+                item.innerHTML = `
+                    <div>${groupName}</div>
+                    <div class="dependency-type">${apis.length}개 연결</div>
+                `;
+                item.addEventListener('click', () => focusGroup(groupName));
+                outList.appendChild(item);
+            });
+        }
+
+        function updateImpact(node) {
+            const impacted = new Set();
+            const toVisit = [node.id];
+            const visited = new Set();
+
+            // BFS to find all impacted nodes (depth 2)
+            let depth = 0;
+            while (toVisit.length > 0 && depth < 2) {
+                const current = toVisit.shift();
+                if (visited.has(current)) continue;
+                visited.add(current);
+
+                links.forEach(link => {
+                    const sourceId = link.source.id || link.source;
+                    const targetId = link.target.id || link.target;
+                    
+                    if (sourceId === current && !visited.has(targetId)) {
+                        impacted.add(targetId);
+                        toVisit.push(targetId);
+                    }
+                });
+                depth++;
+            }
+
+            const detail = document.getElementById('impact-detail');
+            detail.innerHTML = `
+                <div>직접 영향: ${links.filter(l => (l.source.id || l.source) === node.id).length}개 API</div>
+                <div>간접 영향 (깊이 2): ${impacted.size}개 API</div>
+                <div style="margin-top: 8px; color: #8892b0;">
+                    이 API를 변경하면 ${impacted.size}개의 다른 API에 영향을 줄 수 있습니다.
+                </div>
+            `;
+        }
+
+        function handleSearch(event) {
+            const query = event.target.value.toLowerCase();
+            
+            if (!query) {
+                clearFocus();
+                return;
+            }
+
+            // Search in current view
+            if (currentView === 'group') {
+                const matchingGroup = Array.from(groups.keys()).find(name => 
+                    name.toLowerCase().includes(query)
+                );
+                if (matchingGroup) {
+                    focusGroup(matchingGroup);
+                }
+            } else if (currentView === 'detail') {
+                const match = nodes.find(n => 
+                    n.apiName.toLowerCase().includes(query) ||
+                    n.path.toLowerCase().includes(query) ||
+                    n.id.toLowerCase().includes(query)
+                );
+                if (match) {
+                    focusNode(match);
+                }
+            }
+        }
+
+        function switchView(view) {
+            currentView = view;
+            
+            // Update buttons
+            document.querySelectorAll('.view-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.view === view);
+            });
+
+            // Render new view
+            renderGraph();
+        }
+
+        function showMatrixDetail(source, target) {
+            const deps = links.filter(l => {
+                const sourceNode = nodes.find(n => n.id === l.source);
+                const targetNode = nodes.find(n => n.id === l.target);
+                return sourceNode?.group === source && targetNode?.group === target;
+            });
+
+            // Switch to detail view and highlight connections
+            switchView('detail');
+            
+            // Highlight relevant nodes
+            setTimeout(() => {
+                const relevantNodes = new Set();
+                deps.forEach(dep => {
+                    relevantNodes.add(dep.source);
+                    relevantNodes.add(dep.target);
+                });
+
+                g.selectAll('.node')
+                    .classed('highlighted', d => relevantNodes.has(d.id))
+                    .classed('dimmed', d => !relevantNodes.has(d.id));
+
+                g.selectAll('.link')
+                    .classed('highlighted', d => {
+                        const sourceId = d.source.id || d.source;
+                        const targetId = d.target.id || d.target;
+                        return relevantNodes.has(sourceId) && relevantNodes.has(targetId);
+                    })
+                    .classed('dimmed', d => {
+                        const sourceId = d.source.id || d.source;
+                        const targetId = d.target.id || d.target;
+                        return !relevantNodes.has(sourceId) || !relevantNodes.has(targetId);
+                    });
+            }, 500);
+        }
+
+        function showGroupTooltip(event, d) {
+            const tooltip = document.getElementById('tooltip');
+            const depCount = links.filter(link => {
+                const sourceNode = nodes.find(n => n.id === link.source);
+                const targetNode = nodes.find(n => n.id === link.target);
+                return sourceNode?.group === d.name || targetNode?.group === d.name;
+            }).length;
+            
+            tooltip.innerHTML = `
+                <h4>${d.name}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">APIs:</span>
+                    <span class="tooltip-value">${d.apis.length}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">의존성:</span>
+                    <span class="tooltip-value">${depCount}</span>
+                </div>
+            `;
+            
+            tooltip.style.left = event.pageX + 10 + 'px';
+            tooltip.style.top = event.pageY + 10 + 'px';
+            tooltip.classList.add('show');
+        }
+
+        function showNodeTooltip(event, d) {
+            const tooltip = document.getElementById('tooltip');
+            const metric = metrics.get(d.id);
+            
+            let content = `
+                <h4 style="color: #ffffff;">${d.apiName}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">메소드:</span>
+                    <span class="tooltip-value">${d.method}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">경로:</span>
+                    <span class="tooltip-value">${d.path}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">그룹:</span>
+                    <span class="tooltip-value">${d.group}</span>
+                </div>
+            `;
+            
+            if (metric) {
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">호출:</span>
+                        <span class="tooltip-value">${metric.calls.toLocaleString()}회</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">P95:</span>
+                        <span class="tooltip-value">${metric.p95}ms</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">오류율:</span>
+                        <span class="tooltip-value">${(metric.errorRate * 100).toFixed(1)}%</span>
+                    </div>
+                `;
+            }
+            
+            tooltip.innerHTML = content;
+            tooltip.style.left = event.pageX + 10 + 'px';
+            tooltip.style.top = event.pageY + 10 + 'px';
+            tooltip.classList.add('show');
+        }
+
+        function showMatrixTooltip(event, d) {
+            const tooltip = document.getElementById('tooltip');
+            
+            tooltip.innerHTML = `
+                <h4>${d.source} → ${d.target}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">연결 수:</span>
+                    <span class="tooltip-value">${d.value}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">총 가중치:</span>
+                    <span class="tooltip-value">${d.weight}</span>
+                </div>
+            `;
+            
+            tooltip.style.left = event.pageX + 10 + 'px';
+            tooltip.style.top = event.pageY + 10 + 'px';
+            tooltip.classList.add('show');
+        }
+
+        function hideTooltip() {
+            const tooltip = document.getElementById('tooltip');
+            tooltip.classList.remove('show');
+        }
+
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+
+        function updateStats() {
+            document.getElementById('stat-groups').textContent = groups.size;
+            document.getElementById('stat-apis').textContent = nodes.length;
+            document.getElementById('stat-deps').textContent = links.length;
+            document.getElementById('stat-cycles').textContent = cycles.length;
+        }
+
+        // Zoom controls
+        function zoomIn() {
+            svg.transition().duration(300).call(zoom.scaleBy, 1.3);
+        }
+
+        function zoomOut() {
+            svg.transition().duration(300).call(zoom.scaleBy, 0.7);
+        }
+
+        function resetZoom() {
+            svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+        }
+
+        function fitToScreen() {
+            const bounds = g.node().getBBox();
+            const canvas = document.getElementById('canvas');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            
+            const scale = 0.9 * Math.min(width / bounds.width, height / bounds.height);
+            const translate = [
+                width / 2 - scale * (bounds.x + bounds.width / 2),
+                height / 2 - scale * (bounds.y + bounds.height / 2)
+            ];
+            
+            svg.transition().duration(300).call(
+                zoom.transform,
+                d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+            );
+        }
+
+        // Sample data generator
+        function loadSampleData() {
+            const sampleOpenAPI = {
+                openapi: "3.0.0",
+                info: { title: "E-Commerce API", version: "1.0.0" },
+                paths: {
+                    // Auth APIs
+                    "/auth/login": {
+                        post: { summary: "사용자 로그인", tags: ["auth"] }
+                    },
+                    "/auth/logout": {
+                        post: { summary: "사용자 로그아웃", tags: ["auth"] }
+                    },
+                    "/auth/refresh": {
+                        post: { summary: "토큰 갱신", tags: ["auth"] }
+                    },
+                    "/auth/register": {
+                        post: { summary: "회원 가입", tags: ["auth"] }
+                    },
+                    
+                    // User APIs
+                    "/users": {
+                        get: { summary: "사용자 목록 조회", tags: ["user"] },
+                        post: { summary: "사용자 생성", tags: ["user"] }
+                    },
+                    "/users/{id}": {
+                        get: { summary: "사용자 상세 조회", tags: ["user"] },
+                        put: { summary: "사용자 정보 수정", tags: ["user"] },
+                        delete: { summary: "사용자 삭제", tags: ["user"] }
+                    },
+                    "/users/{id}/profile": {
+                        get: { summary: "프로필 조회", tags: ["user"] },
+                        put: { summary: "프로필 수정", tags: ["user"] }
+                    },
+                    
+                    // Product APIs
+                    "/products": {
+                        get: { summary: "상품 목록 조회", tags: ["product"] },
+                        post: { summary: "상품 등록", tags: ["product"] }
+                    },
+                    "/products/{id}": {
+                        get: { summary: "상품 상세 조회", tags: ["product"] },
+                        put: { summary: "상품 정보 수정", tags: ["product"] },
+                        delete: { summary: "상품 삭제", tags: ["product"] }
+                    },
+                    "/products/search": {
+                        get: { summary: "상품 검색", tags: ["product"] }
+                    },
+                    "/products/{id}/reviews": {
+                        get: { summary: "상품 리뷰 조회", tags: ["product"] },
+                        post: { summary: "리뷰 작성", tags: ["product"] }
+                    },
+                    
+                    // Order APIs
+                    "/orders": {
+                        get: { summary: "주문 목록 조회", tags: ["order"] },
+                        post: { summary: "주문 생성", tags: ["order"] }
+                    },
+                    "/orders/{id}": {
+                        get: { summary: "주문 상세 조회", tags: ["order"] },
+                        put: { summary: "주문 수정", tags: ["order"] },
+                        delete: { summary: "주문 취소", tags: ["order"] }
+                    },
+                    "/orders/{id}/items": {
+                        get: { summary: "주문 상품 조회", tags: ["order"] },
+                        post: { summary: "주문 상품 추가", tags: ["order"] }
+                    },
+                    "/cart": {
+                        get: { summary: "장바구니 조회", tags: ["order"] },
+                        post: { summary: "장바구니 추가", tags: ["order"] },
+                        delete: { summary: "장바구니 비우기", tags: ["order"] }
+                    },
+                    
+                    // Payment APIs
+                    "/payments": {
+                        get: { summary: "결제 내역 조회", tags: ["payment"] },
+                        post: { summary: "결제 처리", tags: ["payment"] }
+                    },
+                    "/payments/{id}": {
+                        get: { summary: "결제 상세 조회", tags: ["payment"] }
+                    },
+                    "/payments/{id}/refund": {
+                        post: { summary: "환불 처리", tags: ["payment"] }
+                    },
+                    "/subscriptions": {
+                        get: { summary: "구독 목록 조회", tags: ["payment"] },
+                        post: { summary: "구독 생성", tags: ["payment"] }
+                    },
+                    
+                    // Admin APIs
+                    "/admin/users": {
+                        get: { summary: "전체 사용자 관리", tags: ["admin"] }
+                    },
+                    "/admin/reports": {
+                        get: { summary: "리포트 생성", tags: ["report"] }
+                    },
+                    "/admin/dashboard": {
+                        get: { summary: "대시보드 데이터", tags: ["report"] }
+                    },
+                    
+                    // Email APIs
+                    "/emails/send": {
+                        post: { summary: "이메일 발송", tags: ["email"] }
+                    },
+                    "/emails/campaigns": {
+                        get: { summary: "캠페인 목록", tags: ["email"] },
+                        post: { summary: "캠페인 생성", tags: ["email"] }
+                    }
+                }
+            };
+
+            const sampleMetrics = [
+                { id: "GET_/users", calls: 15000, p95: 250, errorRate: 0.01 },
+                { id: "POST_/users", calls: 3000, p95: 450, errorRate: 0.02 },
+                { id: "GET_/users/{id}", calls: 25000, p95: 180, errorRate: 0.005 },
+                { id: "POST_/auth/login", calls: 8000, p95: 320, errorRate: 0.03 },
+                { id: "GET_/products", calls: 30000, p95: 200, errorRate: 0.01 },
+                { id: "GET_/products/{id}", calls: 45000, p95: 150, errorRate: 0.008 },
+                { id: "POST_/orders", calls: 5000, p95: 800, errorRate: 0.04 },
+                { id: "POST_/payments", calls: 5000, p95: 1200, errorRate: 0.08 },
+                { id: "GET_/admin/dashboard", calls: 2000, p95: 2500, errorRate: 0.02 }
+            ];
+
+            parseOpenAPI(sampleOpenAPI);
+            parseMetrics(sampleMetrics);
+            updateStatus('✅ 샘플 데이터 로드 완료');
+            renderGraph();
+        }
+    </script>
+</body>
+</html>
