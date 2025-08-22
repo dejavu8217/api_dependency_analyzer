@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API 의존성 시각화 & 리스크 분석기</title>
+    <title>API 의존성 시각화 & 리스크 분석기 1.0 </title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * {
@@ -186,7 +186,7 @@
             flex: 1;
             overflow-y: auto;
             padding: 16px;
-            min-height: 250px;
+            min-height: 250px; /* 개선된 부분: 최소 높이 보장 */
         }
 
         .section-title {
@@ -572,8 +572,7 @@
 
         .group-node.focused {
             fill-opacity: 0.3;
-            stroke-width: 4px;
-            stroke: #64ffda;
+            stroke-width: 3;
         }
 
         .group-label {
@@ -621,7 +620,6 @@
 </head>
 <body>
     <div id="app">
-        <!-- Left Panel -->
         <div id="left-panel">
             <div class="upload-section">
                 <label for="openapi-upload">
@@ -669,7 +667,6 @@
             </div>
         </div>
 
-        <!-- Main Content -->
         <div id="main-content">
             <div id="header">
                 <h1>🔍 API 의존성 분석기</h1>
@@ -694,12 +691,10 @@
                 </div>
                 
                 <div class="legend" id="legend" style="display: none;">
-                    <!-- 범례는 동적으로 생성됨 -->
-                </div>
+                    </div>
             </div>
         </div>
 
-        <!-- Right Panel -->
         <div id="right-panel">
             <div id="node-info" style="display: none;">
                 <div class="metric-card">
@@ -2098,14 +2093,19 @@
 
         function highlightNodeConnections(node) {
             const connectedNodes = new Set([node.id]);
+            const incomingLinks = [];
+            const outgoingLinks = [];
+
             links.forEach(link => {
                 const sourceId = link.source.id || link.source;
                 const targetId = link.target.id || link.target;
                 
                 if (targetId === node.id) {
                     connectedNodes.add(sourceId);
+                    incomingLinks.push(link);
                 } else if (sourceId === node.id) {
                     connectedNodes.add(targetId);
+                    outgoingLinks.push(link);
                 }
             });
 
@@ -2127,18 +2127,25 @@
                     const sourceId = d.source.id || d.source;
                     const targetId = d.target.id || d.target;
                     
-                    if (sourceId === node.id) return '#0c8ce9'; // Outgoing
-                    if (targetId === node.id) return '#EA4D08'; // Incoming
+                    if (sourceId === node.id) {
+                        return '#0c8ce9';
+                    } else if (targetId === node.id) {
+                        return '#EA4D08';
+                    }
                     return d.color || '#666';
                 })
                 .style('stroke-dasharray', function(d) {
                     const sourceId = d.source.id || d.source;
-                    if (sourceId === node.id) return '5,5'; // Outgoing
-                    return 'none'; // Incoming
+                    
+                    if (sourceId === node.id) {
+                        return '5,5';
+                    }
+                    return 'none';
                 })
                 .style('stroke-width', function(d) {
                     const sourceId = d.source.id || d.source;
                     const targetId = d.target.id || d.target;
+                    
                     if (sourceId === node.id || targetId === node.id) {
                         return Math.max(2, Math.sqrt(d.weight || 1) * 1.5);
                     }
@@ -2147,73 +2154,120 @@
                 .style('stroke-opacity', function(d) {
                     const sourceId = d.source.id || d.source;
                     const targetId = d.target.id || d.target;
-                    if (sourceId === node.id || targetId === node.id) return 1;
+                    
+                    if (sourceId === node.id || targetId === node.id) {
+                        return 1;
+                    }
                     return 0.1;
                 })
                 .attr('marker-end', function(d) {
                     const sourceId = d.source.id || d.source;
                     const targetId = d.target.id || d.target;
-                    if (sourceId === node.id) return 'url(#arrow-outgoing)';
-                    if (targetId === node.id) return 'url(#arrow-incoming)';
+                    
+                    if (sourceId === node.id) {
+                        return 'url(#arrow-outgoing)';
+                    } else if (targetId === node.id) {
+                        return 'url(#arrow-incoming)';
+                    }
                     return `url(#arrow-${d.type || 'normal'})`;
+                })
+                .classed('highlighted', d => {
+                    const sourceId = d.source.id || d.source;
+                    const targetId = d.target.id || d.target;
+                    return sourceId === node.id || targetId === node.id;
                 })
                 .classed('dimmed', d => {
                     const sourceId = d.source.id || d.source;
                     const targetId = d.target.id || d.target;
                     return sourceId !== node.id && targetId !== node.id;
                 });
+
+            g.selectAll('.node-label')
+                .style('opacity', function() {
+                    const parentNode = d3.select(this.parentNode).datum();
+                    if (parentNode) {
+                        return connectedNodes.has(parentNode.id) ? 1 : 0.3;
+                    }
+                    return 1;
+                });
         }
 
         function highlightGroupConnections(groupName) {
             const connectedGroups = new Set([groupName]);
+            
             links.forEach(link => {
                 const sourceNode = nodes.find(n => n.id === link.source);
                 const targetNode = nodes.find(n => n.id === link.target);
-                if (!sourceNode || !targetNode) return;
-                if (sourceNode.group === groupName) connectedGroups.add(targetNode.group);
-                if (targetNode.group === groupName) connectedGroups.add(sourceNode.group);
+                if (sourceNode?.group === groupName) {
+                    connectedGroups.add(targetNode?.group);
+                }
+                if (targetNode?.group === groupName) {
+                    connectedGroups.add(sourceNode?.group);
+                }
             });
 
-            g.selectAll('.node').selectAll('circle.group-node')
+            g.selectAll('.group-node')
                 .classed('focused', d => d.name === groupName)
-                .classed('dimmed', d => !connectedGroups.has(d.name));
+                .classed('dimmed', d => !connectedGroups.has(d.name))
+                .style('stroke-width', d => d.name === groupName ? 4 : 2)
+                .style('filter', d => d.name === groupName ? 'brightness(1.3)' : 'brightness(1)');
 
             g.selectAll('.link')
                 .style('stroke', function(d) {
                     const sourceName = d.source.name || d.source.id || d.source;
                     const targetName = d.target.name || d.target.id || d.target;
-                    if (sourceName === groupName) return '#0c8ce9'; // Outgoing
-                    if (targetName === groupName) return '#EA4D08'; // Incoming
+                    
+                    if (sourceName === groupName) {
+                        return '#0c8ce9';
+                    } else if (targetName === groupName) {
+                        return '#EA4D08';
+                    }
                     return '#666';
                 })
                 .style('stroke-dasharray', function(d) {
                     const sourceName = d.source.name || d.source.id || d.source;
-                    if (sourceName === groupName) return '5,5'; // Outgoing
-                    return 'none'; // Incoming
+                    
+                    if (sourceName === groupName) {
+                        return '5,5';
+                    }
+                    return 'none';
                 })
                 .style('stroke-width', function(d) {
                     const sourceName = d.source.name || d.source.id || d.source;
                     const targetName = d.target.name || d.target.id || d.target;
-                    if (sourceName === groupName || targetName === groupName) return Math.max(2, Math.log((d.count || 1) + 1) * 1.5);
+                    
+                    if (sourceName === groupName || targetName === groupName) {
+                        return Math.max(2, Math.log((d.count || 1) + 1) * 1.5);
+                    }
                     return Math.max(1, Math.log((d.count || 1) + 1));
                 })
                 .style('stroke-opacity', function(d) {
                     const sourceName = d.source.name || d.source.id || d.source;
                     const targetName = d.target.name || d.target.id || d.target;
-                    if (sourceName === groupName || targetName === groupName) return 1;
+                    
+                    if (sourceName === groupName || targetName === groupName) {
+                        return 1;
+                    }
                     return 0.1;
                 })
-                .attr('marker-end', function(d) {
+                .classed('highlighted', d => {
                     const sourceName = d.source.name || d.source.id || d.source;
                     const targetName = d.target.name || d.target.id || d.target;
-                    if (sourceName === groupName) return 'url(#arrow-outgoing)';
-                    if (targetName === groupName) return 'url(#arrow-incoming)';
-                    return 'url(#arrow-normal)';
+                    return sourceName === groupName || targetName === groupName;
                 })
                 .classed('dimmed', d => {
                     const sourceName = d.source.name || d.source.id || d.source;
                     const targetName = d.target.name || d.target.id || d.target;
-                    return sourceName !== groupName && targetName !== groupName;
+                    return !connectedGroups.has(sourceName) && !connectedGroups.has(targetName);
+                });
+
+            g.selectAll('.group-label, .node-label')
+                .style('opacity', function() {
+                    const parentNode = d3.select(this.parentNode).datum();
+                    if (parentNode) {
+                        return connectedGroups.has(parentNode.name || parentNode.id) ? 1 : 0.3;
+                    }
+                    return 1;
                 });
         }
 
@@ -2221,10 +2275,12 @@
             focusedNode = null;
             focusedGroup = null;
 
-            g.selectAll('.node, .group-node').classed('highlighted focused dimmed', false).style('stroke', null).style('stroke-width', null);
-            g.selectAll('.link').classed('highlighted dimmed', false).style('stroke', null).style('stroke-width', null).style('stroke-opacity', null).style('stroke-dasharray', null).attr('marker-end', d => `url(#arrow-${d.type || 'normal'})`);
+            g.selectAll('.node, .group-node').classed('highlighted focused dimmed', false);
+            g.selectAll('.link').classed('highlighted dimmed', false);
             
-            document.querySelectorAll('.group-item').forEach(item => item.classList.remove('active'));
+            document.querySelectorAll('.group-item').forEach(item => {
+                item.classList.remove('active');
+            });
 
             document.getElementById('node-info').style.display = 'none';
             document.getElementById('default-info').style.display = 'block';
@@ -2255,45 +2311,22 @@
             document.getElementById('default-info').style.display = 'none';
             document.getElementById('node-info').style.display = 'block';
 
-            // 메소드 분포 계산
-            const methodCounts = group.apis.reduce((acc, api) => {
-                acc[api.method] = (acc[api.method] || 0) + 1;
-                return acc;
-            }, {});
-            const methodDistribution = Object.entries(methodCounts)
-                .map(([method, count]) => `${method}: ${count}`)
-                .join(' ');
-
             document.getElementById('selected-name').textContent = group.name;
             document.getElementById('selected-details').innerHTML = `
                 <div><strong>API 수:</strong> ${group.apis.length}</div>
-                <div><strong>메소드 분포:</strong> ${methodDistribution}</div>
+                <div><strong>메소드 분포:</strong></div>
+                ${Object.entries(group.apis.reduce((acc, api) => {
+                    acc[api.method] = (acc[api.method] || 0) + 1;
+                    return acc;
+                }, {})).map(([method, count]) => 
+                    `<div style="margin-left: 10px;">${method}: ${count}</div>`
+                ).join('')}
             `;
 
-            // 그룹 단위 위험도 계산
-            const inDeps = new Set();
-            const outDeps = new Set();
-            links.forEach(link => {
-                const sourceNode = nodes.find(n => n.id === (link.source.id || link.source));
-                const targetNode = nodes.find(n => n.id === (link.target.id || link.target));
-                if (!sourceNode || !targetNode || sourceNode.group === targetNode.group) return;
-
-                if (targetNode.group === group.name) inDeps.add(link);
-                if (sourceNode.group === group.name) outDeps.add(link);
-            });
-            const inCount = inDeps.size;
-            const outCount = outDeps.size;
-
-            const riskScore = Math.min(10, (inCount * 2 + outCount) / 5.0); // 점수 스케일링
-            const riskLevel = riskScore < 3 ? '낮음' : riskScore < 7 ? '중간' : '높음';
-
-            document.getElementById('risk-score').textContent = riskScore.toFixed(1);
-            document.getElementById('risk-gauge').style.width = `${riskScore * 10}%`;
-            document.getElementById('risk-detail').innerHTML = `
-                <strong>위험도: ${riskLevel}</strong><br>
-                • ${inCount}개의 들어오는 의존성 (×2)<br>
-                • ${outCount}개의 나가는 의존성 (×1)
-            `;
+            const avgRisk = group.apis.reduce((sum, api) => sum + calculateRiskScore(api).score, 0) / group.apis.length;
+            document.getElementById('risk-score').textContent = avgRisk.toFixed(1);
+            document.getElementById('risk-gauge').style.width = `${avgRisk * 10}%`;
+            document.getElementById('risk-detail').innerHTML = `그룹 평균 위험도: ${avgRisk.toFixed(1)}`;
 
             updateGroupDependencies(group);
         }
@@ -2301,11 +2334,13 @@
         function calculateRiskScore(node) {
             const details = [];
             
+            // 1. 의존성 점수 (로그 스케일, 최대 4점)
             const inDeps = links.filter(l => (l.target.id || l.target) === node.id).length;
             const outDeps = links.filter(l => (l.source.id || l.source) === node.id).length;
             const depScore = Math.min(4, Math.log1p(inDeps * 1.5 + outDeps) * 1.2);
             details.push(`• 의존성 점수: ${depScore.toFixed(1)}/4.0`);
 
+            // 2. 중요도 점수 (최대 4점)
             let criticalityScore = 0;
             if (node.method === 'DELETE') {
                 criticalityScore += 1.5;
@@ -2323,6 +2358,7 @@
                 details.push(`• 그룹 중요도 (결제): +1.5`);
             }
 
+            // 3. 성능/메트릭 점수 (최대 3점)
             let metricsScore = 0;
             const metric = metrics.get(node.id);
             if (metric) {
@@ -2340,8 +2376,9 @@
                 }
             }
 
+            // 최종 점수 합산
             let score = depScore + criticalityScore + metricsScore;
-            score = Math.min(10, score);
+            score = Math.min(10, score); // 만약을 위해 10점 상한 유지
 
             const level = score < 3 ? '낮음' : score < 7 ? '중간' : '높음';
             details.unshift(`<strong>위험도: ${level}</strong>`);
@@ -2359,10 +2396,22 @@
                 
                 if (targetId === node.id) {
                     const sourceNode = nodes.find(n => n.id === sourceId);
-                    if (sourceNode) inDeps.push({ node: sourceNode, type: link.type, weight: link.weight });
+                    if (sourceNode) {
+                        inDeps.push({
+                            node: sourceNode,
+                            type: link.type,
+                            weight: link.weight
+                        });
+                    }
                 } else if (sourceId === node.id) {
                     const targetNode = nodes.find(n => n.id === targetId);
-                    if (targetNode) outDeps.push({ node: targetNode, type: link.type, weight: link.weight });
+                    if (targetNode) {
+                        outDeps.push({
+                            node: targetNode,
+                            type: link.type,
+                            weight: link.weight
+                        });
+                    }
                 }
             });
 
@@ -2371,7 +2420,10 @@
             inDeps.forEach(dep => {
                 const item = document.createElement('div');
                 item.className = 'dependency-item incoming';
-                item.innerHTML = `<div>${dep.node.apiName}</div><div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>`;
+                item.innerHTML = `
+                    <div>${dep.node.apiName}</div>
+                    <div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>
+                `;
                 item.addEventListener('click', () => focusNode(dep.node));
                 inList.appendChild(item);
             });
@@ -2381,7 +2433,10 @@
             outDeps.forEach(dep => {
                 const item = document.createElement('div');
                 item.className = 'dependency-item outgoing';
-                item.innerHTML = `<div>${dep.node.apiName}</div><div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>`;
+                item.innerHTML = `
+                    <div>${dep.node.apiName}</div>
+                    <div class="dependency-type">타입: ${dep.type} | 가중치: ${dep.weight}</div>
+                `;
                 item.addEventListener('click', () => focusNode(dep.node));
                 outList.appendChild(item);
             });
@@ -2399,14 +2454,18 @@
                     if (targetId === api.id) {
                         const sourceNode = nodes.find(n => n.id === sourceId);
                         if (sourceNode && sourceNode.group !== group.name) {
-                            if (!inGroups.has(sourceNode.group)) inGroups.set(sourceNode.group, 0);
-                            inGroups.set(sourceNode.group, inGroups.get(sourceNode.group) + 1);
+                            if (!inGroups.has(sourceNode.group)) {
+                                inGroups.set(sourceNode.group, []);
+                            }
+                            inGroups.get(sourceNode.group).push(sourceNode);
                         }
                     } else if (sourceId === api.id) {
                         const targetNode = nodes.find(n => n.id === targetId);
                         if (targetNode && targetNode.group !== group.name) {
-                            if (!outGroups.has(targetNode.group)) outGroups.set(targetNode.group, 0);
-                            outGroups.set(targetNode.group, outGroups.get(targetNode.group) + 1);
+                            if (!outGroups.has(targetNode.group)) {
+                                outGroups.set(targetNode.group, []);
+                            }
+                            outGroups.get(targetNode.group).push(targetNode);
                         }
                     }
                 });
@@ -2414,20 +2473,26 @@
 
             const inList = document.getElementById('in-dependencies');
             inList.innerHTML = inGroups.size === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
-            inGroups.forEach((count, groupName) => {
+            inGroups.forEach((apis, groupName) => {
                 const item = document.createElement('div');
                 item.className = 'dependency-item incoming';
-                item.innerHTML = `<div>${groupName}</div><div class="dependency-type">${count}개 연결</div>`;
+                item.innerHTML = `
+                    <div>${groupName}</div>
+                    <div class="dependency-type">${apis.length}개 연결</div>
+                `;
                 item.addEventListener('click', () => focusGroup(groupName));
                 inList.appendChild(item);
             });
 
             const outList = document.getElementById('out-dependencies');
             outList.innerHTML = outGroups.size === 0 ? '<div style="color: #8892b0;">없음</div>' : '';
-            outGroups.forEach((count, groupName) => {
+            outGroups.forEach((apis, groupName) => {
                 const item = document.createElement('div');
                 item.className = 'dependency-item outgoing';
-                item.innerHTML = `<div>${groupName}</div><div class="dependency-type">${count}개 연결</div>`;
+                item.innerHTML = `
+                    <div>${groupName}</div>
+                    <div class="dependency-type">${apis.length}개 연결</div>
+                `;
                 item.addEventListener('click', () => focusGroup(groupName));
                 outList.appendChild(item);
             });
@@ -2478,20 +2543,28 @@
                 const matchingGroup = Array.from(groups.keys()).find(name => 
                     name.toLowerCase().includes(query)
                 );
-                if (matchingGroup) focusGroup(matchingGroup);
+                if (matchingGroup) {
+                    focusGroup(matchingGroup);
+                }
             } else if (currentView === 'detail') {
                 const match = nodes.find(n => 
                     n.apiName.toLowerCase().includes(query) ||
                     n.path.toLowerCase().includes(query) ||
                     n.id.toLowerCase().includes(query)
                 );
-                if (match) focusNode(match);
+                if (match) {
+                    focusNode(match);
+                }
             }
         }
 
         function switchView(view) {
             currentView = view;
-            document.querySelectorAll('.view-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+            
+            document.querySelectorAll('.view-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.view === view);
+            });
+
             renderGraph();
         }
 
@@ -2537,7 +2610,18 @@
                 return sourceNode?.group === d.name || targetNode?.group === d.name;
             }).length;
             
-            tooltip.innerHTML = `<h4>${d.name}</h4><div class="tooltip-row"><span class="tooltip-label">APIs:</span><span class="tooltip-value">${d.apis.length}</span></div><div class="tooltip-row"><span class="tooltip-label">의존성:</span><span class="tooltip-value">${depCount}</span></div>`;
+            tooltip.innerHTML = `
+                <h4>${d.name}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">APIs:</span>
+                    <span class="tooltip-value">${d.apis.length}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">의존성:</span>
+                    <span class="tooltip-value">${depCount}</span>
+                </div>
+            `;
+            
             tooltip.style.left = event.pageX + 10 + 'px';
             tooltip.style.top = event.pageY + 10 + 'px';
             tooltip.classList.add('show');
@@ -2546,10 +2630,40 @@
         function showNodeTooltip(event, d) {
             const tooltip = document.getElementById('tooltip');
             const metric = metrics.get(d.id);
-            let content = `<h4 style="color: #ffffff;">${d.apiName}</h4><div class="tooltip-row"><span class="tooltip-label">메소드:</span><span class="tooltip-value">${d.method}</span></div><div class="tooltip-row"><span class="tooltip-label">경로:</span><span class="tooltip-value">${d.path}</span></div><div class="tooltip-row"><span class="tooltip-label">그룹:</span><span class="tooltip-value">${d.group}</span></div>`;
+            
+            let content = `
+                <h4 style="color: #ffffff;">${d.apiName}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">메소드:</span>
+                    <span class="tooltip-value">${d.method}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">경로:</span>
+                    <span class="tooltip-value">${d.path}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">그룹:</span>
+                    <span class="tooltip-value">${d.group}</span>
+                </div>
+            `;
+            
             if (metric) {
-                content += `<div class="tooltip-row"><span class="tooltip-label">호출:</span><span class="tooltip-value">${metric.calls.toLocaleString()}회</span></div><div class="tooltip-row"><span class="tooltip-label">P95:</span><span class="tooltip-value">${metric.p95}ms</span></div><div class="tooltip-row"><span class="tooltip-label">오류율:</span><span class="tooltip-value">${(metric.errorRate * 100).toFixed(1)}%</span></div>`;
+                content += `
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">호출:</span>
+                        <span class="tooltip-value">${metric.calls.toLocaleString()}회</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">P95:</span>
+                        <span class="tooltip-value">${metric.p95}ms</span>
+                    </div>
+                    <div class="tooltip-row">
+                        <span class="tooltip-label">오류율:</span>
+                        <span class="tooltip-value">${(metric.errorRate * 100).toFixed(1)}%</span>
+                    </div>
+                `;
             }
+            
             tooltip.innerHTML = content;
             tooltip.style.left = event.pageX + 10 + 'px';
             tooltip.style.top = event.pageY + 10 + 'px';
@@ -2558,14 +2672,27 @@
 
         function showMatrixTooltip(event, d) {
             const tooltip = document.getElementById('tooltip');
-            tooltip.innerHTML = `<h4>${d.source} → ${d.target}</h4><div class="tooltip-row"><span class="tooltip-label">연결 수:</span><span class="tooltip-value">${d.value}</span></div><div class="tooltip-row"><span class="tooltip-label">총 가중치:</span><span class="tooltip-value">${d.weight}</span></div>`;
+            
+            tooltip.innerHTML = `
+                <h4>${d.source} → ${d.target}</h4>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">연결 수:</span>
+                    <span class="tooltip-value">${d.value}</span>
+                </div>
+                <div class="tooltip-row">
+                    <span class="tooltip-label">총 가중치:</span>
+                    <span class="tooltip-value">${d.weight}</span>
+                </div>
+            `;
+            
             tooltip.style.left = event.pageX + 10 + 'px';
             tooltip.style.top = event.pageY + 10 + 'px';
             tooltip.classList.add('show');
         }
 
         function hideTooltip() {
-            document.getElementById('tooltip').classList.remove('show');
+            const tooltip = document.getElementById('tooltip');
+            tooltip.classList.remove('show');
         }
 
         function updateStatus(message) {
@@ -2573,58 +2700,171 @@
         }
 
         function updateStats() {
-            document.getElementById('stat-groups').textContent = groups.size;
-            document.getElementById('stat-apis').textContent = nodes.length;
-            document.getElementById('stat-deps').textContent = links.length;
-            document.getElementById('stat-cycles').textContent = cycles.length;
+            const statsGroups = document.getElementById('stat-groups');
+            const statsApis = document.getElementById('stat-apis');
+            const statsDeps = document.getElementById('stat-deps');
+            const statsCycles = document.getElementById('stat-cycles');
+            
+            if (statsGroups) statsGroups.textContent = groups.size;
+            if (statsApis) statsApis.textContent = nodes.length;
+            if (statsDeps) statsDeps.textContent = links.length;
+            if (statsCycles) statsCycles.textContent = cycles.length;
         }
 
         // Zoom controls
-        function zoomIn() { svg.transition().duration(300).call(zoom.scaleBy, 1.3); }
-        function zoomOut() { svg.transition().duration(300).call(zoom.scaleBy, 0.7); }
-        function resetZoom() { svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity); }
+        function zoomIn() {
+            svg.transition().duration(300).call(zoom.scaleBy, 1.3);
+        }
+
+        function zoomOut() {
+            svg.transition().duration(300).call(zoom.scaleBy, 0.7);
+        }
+
+        function resetZoom() {
+            svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+        }
 
         function fitToScreen() {
             const bounds = g.node().getBBox();
             const canvas = document.getElementById('canvas');
             const width = canvas.clientWidth;
             const height = canvas.clientHeight;
+            
             const scale = 0.9 * Math.min(width / bounds.width, height / bounds.height);
-            const translate = [width / 2 - scale * (bounds.x + bounds.width / 2), height / 2 - scale * (bounds.y + bounds.height / 2)];
-            svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale));
+            const translate = [
+                width / 2 - scale * (bounds.x + bounds.width / 2),
+                height / 2 - scale * (bounds.y + bounds.height / 2)
+            ];
+            
+            svg.transition().duration(300).call(
+                zoom.transform,
+                d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+            );
         }
 
         // Sample data generator
         function loadSampleData() {
             const sampleOpenAPI = {
-                openapi: "3.0.0", info: { title: "E-Commerce API", version: "1.0.0" },
+                openapi: "3.0.0",
+                info: { title: "E-Commerce API", version: "1.0.0" },
                 paths: {
-                    "/auth/login": { post: { summary: "사용자 로그인", tags: ["auth"] } },
-                    "/auth/logout": { post: { summary: "사용자 로그아웃", tags: ["auth"] } },
-                    "/auth/register": { post: { summary: "회원 가입", tags: ["auth"] } },
-                    "/users": { get: { summary: "사용자 목록 조회", tags: ["user"] }, post: { summary: "사용자 생성", tags: ["user"] } },
-                    "/users/{id}": { get: { summary: "사용자 상세 조회", tags: ["user"] }, put: { summary: "사용자 정보 수정", tags: ["user"] }, delete: { summary: "사용자 삭제", tags: ["user"] } },
-                    "/products": { get: { summary: "상품 목록 조회", tags: ["product"] }, post: { summary: "상품 등록", tags: ["product"] } },
-                    "/products/{id}": { get: { summary: "상품 상세 조회", tags: ["product"] }, put: { summary: "상품 정보 수정", tags: ["product"] }, delete: { summary: "상품 삭제", tags: ["product"] } },
-                    "/products/{id}/reviews": { get: { summary: "상품 리뷰 조회", tags: ["product"] }, post: { summary: "리뷰 작성", tags: ["product"] } },
-                    "/orders": { get: { summary: "주문 목록 조회", tags: ["order"] }, post: { summary: "주문 생성", tags: ["order"] } },
-                    "/orders/{id}": { get: { summary: "주문 상세 조회", tags: ["order"] }, delete: { summary: "주문 취소", tags: ["order"] } },
-                    "/cart": { get: { summary: "장바구니 조회", tags: ["order"] }, post: { summary: "장바구니 추가", tags: ["order"] } },
-                    "/payments": { post: { summary: "결제 처리", tags: ["payment"] } },
-                    "/payments/{id}/refund": { post: { summary: "환불 처리", tags: ["payment"] } },
-                    "/admin/dashboard": { get: { summary: "대시보드 데이터", tags: ["report"] } },
-                    "/emails/send": { post: { summary: "이메일 발송", tags: ["email"] } }
+                    // Auth APIs
+                    "/auth/login": {
+                        post: { summary: "사용자 로그인", tags: ["auth"] }
+                    },
+                    "/auth/logout": {
+                        post: { summary: "사용자 로그아웃", tags: ["auth"] }
+                    },
+                    "/auth/refresh": {
+                        post: { summary: "토큰 갱신", tags: ["auth"] }
+                    },
+                    "/auth/register": {
+                        post: { summary: "회원 가입", tags: ["auth"] }
+                    },
+                    
+                    // User APIs
+                    "/users": {
+                        get: { summary: "사용자 목록 조회", tags: ["user"] },
+                        post: { summary: "사용자 생성", tags: ["user"] }
+                    },
+                    "/users/{id}": {
+                        get: { summary: "사용자 상세 조회", tags: ["user"] },
+                        put: { summary: "사용자 정보 수정", tags: ["user"] },
+                        delete: { summary: "사용자 삭제", tags: ["user"] }
+                    },
+                    "/users/{id}/profile": {
+                        get: { summary: "프로필 조회", tags: ["user"] },
+                        put: { summary: "프로필 수정", tags: ["user"] }
+                    },
+                    
+                    // Product APIs
+                    "/products": {
+                        get: { summary: "상품 목록 조회", tags: ["product"] },
+                        post: { summary: "상품 등록", tags: ["product"] }
+                    },
+                    "/products/{id}": {
+                        get: { summary: "상품 상세 조회", tags: ["product"] },
+                        put: { summary: "상품 정보 수정", tags: ["product"] },
+                        delete: { summary: "상품 삭제", tags: ["product"] }
+                    },
+                    "/products/search": {
+                        get: { summary: "상품 검색", tags: ["product"] }
+                    },
+                    "/products/{id}/reviews": {
+                        get: { summary: "상품 리뷰 조회", tags: ["product"] },
+                        post: { summary: "리뷰 작성", tags: ["product"] }
+                    },
+                    
+                    // Order APIs
+                    "/orders": {
+                        get: { summary: "주문 목록 조회", tags: ["order"] },
+                        post: { summary: "주문 생성", tags: ["order"] }
+                    },
+                    "/orders/{id}": {
+                        get: { summary: "주문 상세 조회", tags: ["order"] },
+                        put: { summary: "주문 수정", tags: ["order"] },
+                        delete: { summary: "주문 취소", tags: ["order"] }
+                    },
+                    "/orders/{id}/items": {
+                        get: { summary: "주문 상품 조회", tags: ["order"] },
+                        post: { summary: "주문 상품 추가", tags: ["order"] }
+                    },
+                    "/cart": {
+                        get: { summary: "장바구니 조회", tags: ["order"] },
+                        post: { summary: "장바구니 추가", tags: ["order"] },
+                        delete: { summary: "장바구니 비우기", tags: ["order"] }
+                    },
+                    
+                    // Payment APIs
+                    "/payments": {
+                        get: { summary: "결제 내역 조회", tags: ["payment"] },
+                        post: { summary: "결제 처리", tags: ["payment"] }
+                    },
+                    "/payments/{id}": {
+                        get: { summary: "결제 상세 조회", tags: ["payment"] }
+                    },
+                    "/payments/{id}/refund": {
+                        post: { summary: "환불 처리", tags: ["payment"] }
+                    },
+                    "/subscriptions": {
+                        get: { summary: "구독 목록 조회", tags: ["payment"] },
+                        post: { summary: "구독 생성", tags: ["payment"] }
+                    },
+                    
+                    // Admin APIs
+                    "/admin/users": {
+                        get: { summary: "전체 사용자 관리", tags: ["admin"] }
+                    },
+                    "/admin/reports": {
+                        get: { summary: "리포트 생성", tags: ["report"] }
+                    },
+                    "/admin/dashboard": {
+                        get: { summary: "대시보드 데이터", tags: ["report"] }
+                    },
+                    
+                    // Email APIs
+                    "/emails/send": {
+                        post: { summary: "이메일 발송", tags: ["email"] }
+                    },
+                    "/emails/campaigns": {
+                        get: { summary: "캠페인 목록", tags: ["email"] },
+                        post: { summary: "캠페인 생성", tags: ["email"] }
+                    }
                 }
             };
+
             const sampleMetrics = [
                 { id: "GET_/users", calls: 15000, p95: 250, errorRate: 0.01 },
                 { id: "POST_/users", calls: 3000, p95: 450, errorRate: 0.02 },
+                { id: "GET_/users/{id}", calls: 25000, p95: 180, errorRate: 0.005 },
                 { id: "POST_/auth/login", calls: 8000, p95: 320, errorRate: 0.03 },
                 { id: "GET_/products", calls: 30000, p95: 200, errorRate: 0.01 },
+                { id: "GET_/products/{id}", calls: 45000, p95: 150, errorRate: 0.008 },
                 { id: "POST_/orders", calls: 5000, p95: 800, errorRate: 0.04 },
                 { id: "POST_/payments", calls: 5000, p95: 1200, errorRate: 0.08 },
                 { id: "GET_/admin/dashboard", calls: 2000, p95: 2500, errorRate: 0.02 }
             ];
+
             parseOpenAPI(sampleOpenAPI);
             parseMetrics(sampleMetrics);
             updateStatus('✅ 샘플 데이터 로드 완료');
