@@ -33,7 +33,7 @@ https://dejavu8217.github.io/api-dependency-visualizer/
 ### 로컬 실행
 ```bash
 # 레포지토리 클론
-git clone https://github.com/[your-username]/api-dependency-visualizer.git
+git clone https://github.com/dejavu8217/api-dependency-visualizer.git
 
 # 디렉토리 이동
 cd api-dependency-visualizer
