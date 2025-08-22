@@ -210,4 +210,4 @@ Benett
 질문이나 제안사항이 있으시면 이슈를 생성해주세요.
 
 ---
-Made with ❤️ for QA
+Made with ❤️ for Business-Canvans
