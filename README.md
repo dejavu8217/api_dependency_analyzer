@@ -27,7 +27,7 @@
 ### 온라인 데모
 GitHub Pages에서 바로 사용해보세요:
 ```
-https://[your-username].github.io/api-dependency-visualizer/
+https://dejavu8217.github.io/api-dependency-visualizer/
 ```
 
 ### 로컬 실행
